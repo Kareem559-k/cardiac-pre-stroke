@@ -1,4 +1,3 @@
-# app.py — ECG Stroke Prediction with Google Drive + Micro-Dynamics
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -7,7 +6,6 @@ from io import BytesIO
 from scipy.stats import skew, kurtosis
 import matplotlib.pyplot as plt
 
-# optional ECG reader
 try:
     from wfdb import rdrecord
     WFDB_AVAILABLE = True
@@ -25,24 +23,23 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🩺 ECG Stroke Prediction using Micro-Dynamics 🧠")
-st.caption("Loads model & preprocessing files automatically from Google Drive. Supports raw ECG and feature files.")
+st.caption("Uploads ECG data or features to predict stroke risk using ML model.")
 
 # ---------- 🔗 GOOGLE DRIVE FILE IDs ----------
 FILES = {
-    "model": "PUT_MODEL_ID_HERE",      # <-- بدّل بـ ID بتاع meta_logreg.joblib
-    "scaler": "PUT_SCALER_ID_HERE",    # <-- بدّل بـ ID بتاع scaler.joblib
-    "imputer": "PUT_IMPUTER_ID_HERE",  # <-- بدّل بـ ID بتاع imputer.joblib
-    "features": "156hMAAq6_OUd-aka7FKdEtVRoI3HAoa4"  # ✅ features_selected.npy
+    "model": "1IEv8elcXAiUUqXwjxJ8SoMx6wXJ1oy1Y",      # ✅ meta_logreg.joblib
+    "scaler": "PUT_SCALER_ID_HERE",                    # ⬅️ حط ID الخاص بـ scaler.joblib
+    "imputer": "1yeRGBqA6FLCgMVOazMQhcx0jC_1AIkYZ",    # ✅ imputer.joblib
+    "features": "156hMAAq6_OUd-aka7FKdEtVRoI3HAoa4"    # ✅ features_selected.npy
 }
 
-# ---------- 📥 DOWNLOAD HELPERS ----------
+# ---------- 📥 DOWNLOAD FILES ----------
 def download_from_drive(name, drive_id):
-    """Download a file from Google Drive if missing"""
     filename = f"{name}.joblib" if name != "features" else "features_selected.npy"
     if not os.path.exists(filename):
         try:
             url = f"https://drive.google.com/uc?id={drive_id}"
-            st.info(f"📥 Downloading {filename} from Drive...")
+            st.info(f"📥 Downloading {filename} from Google Drive...")
             gdown.download(url, filename, quiet=False)
             st.success(f"✅ Downloaded {filename}")
         except Exception as e:
@@ -54,18 +51,18 @@ SCALER_FNAME = download_from_drive("scaler", FILES["scaler"])
 IMPUTER_FNAME = download_from_drive("imputer", FILES["imputer"])
 FEATURES_FNAME = download_from_drive("features", FILES["features"])
 
-# ---------- 📦 LOAD ARTIFACTS ----------
+# ---------- 🧠 LOAD FILES ----------
 try:
     model = joblib.load(MODEL_FNAME)
     scaler = joblib.load(SCALER_FNAME)
     imputer = joblib.load(IMPUTER_FNAME)
     selected_idx = np.load(FEATURES_FNAME)
-    st.success("✅ All model files loaded successfully.")
+    st.success("✅ Model, scaler, imputer, and feature selection loaded successfully.")
 except Exception as e:
     st.stop()
-    st.error(f"Failed to load model artifacts: {e}")
+    st.error(f"❌ Failed to load model files: {e}")
 
-# ---------- 🧠 MICRO-DYNAMICS FEATURE EXTRACTION ----------
+# ---------- 🧩 MICRO-DYNAMICS ----------
 def extract_micro_features(sig):
     sig = np.array(sig, dtype=float)
     return np.array([
@@ -91,7 +88,7 @@ def align(X, expected):
         st.warning(f"⚠️ Trimmed {X.shape[1]-expected} extra features.")
     return X
 
-# ---------- 🧩 APP INTERFACE ----------
+# ---------- 🌟 APP INTERFACE ----------
 st.markdown("---")
 mode = st.radio("Choose input type:", ["Raw ECG (.hea + .dat)", "Features File (CSV / NPY)"])
 
@@ -115,7 +112,6 @@ if mode == "Raw ECG (.hea + .dat)":
                 st.subheader("📈 ECG Signal Preview")
                 st.line_chart(signal[:2000])
 
-                # Extract micro features
                 feats = extract_micro_features(signal).reshape(1,-1)
                 feats = apply_selection(feats)
                 feats = align(feats, len(imputer.statistics_))
@@ -123,12 +119,10 @@ if mode == "Raw ECG (.hea + .dat)":
                 feats = align(feats, len(scaler.mean_))
                 feats = scaler.transform(feats)
 
-                # Predict
                 prob = model.predict_proba(feats)[0,1]
                 pred = "⚠️ High Stroke Risk" if prob >= 0.5 else "✅ Normal ECG"
                 st.metric("Prediction", pred, f"{prob*100:.2f}% probability")
 
-                # Plot bar chart
                 fig, ax = plt.subplots()
                 ax.bar(["Normal","Stroke Risk"], [1-prob, prob], color=["#6cc070","#ff6b6b"])
                 ax.set_ylim(0,1)
@@ -139,7 +133,7 @@ if mode == "Raw ECG (.hea + .dat)":
             finally:
                 shutil.rmtree(tmpdir, ignore_errors=True)
 
-# ---------- 📊 FEATURE FILE MODE ----------
+# ---------- 📊 FEATURES MODE ----------
 else:
     file = st.file_uploader("Upload CSV or NPY features file", type=["csv","npy"])
     if file:
