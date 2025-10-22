@@ -1,4 +1,12 @@
 streamlit
-pandas
 numpy
+pandas
+scipy
 scikit-learn
+wfdb
+pywavelets
+joblib
+lightgbm
+xgboost
+tqdm
+imbalanced-learn
