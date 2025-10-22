@@ -1,5 +1,5 @@
 # ==========================================================
-# ECG Stroke Prediction App — Final Silent Version (v4)
+# ECG Stroke Prediction App — Enhanced v5 (with 2 Charts + Final Message)
 # ==========================================================
 import streamlit as st
 import numpy as np
@@ -14,50 +14,32 @@ from io import BytesIO
 # إعداد الصفحة
 # =============================
 st.set_page_config(page_title="ECG Stroke Predictor", page_icon="💙", layout="centered")
-st.title("🫀 ECG Stroke Prediction (Final v4)")
-st.caption("Upload model + ECG or feature file to predict stroke risk from ECG micro-dynamics.")
+st.title("🫀 ECG Stroke Prediction (Enhanced v5)")
+st.caption("Upload ECG or feature data to estimate stroke risk using micro-dynamics analysis.")
 
 # =============================
-# تحميل ملفات الموديل
+# تحميل الملفات
 # =============================
 MODEL_PATH = "meta_logreg.joblib"
 SCALER_PATH = "scaler.joblib"
 IMPUTER_PATH = "imputer.joblib"
 FEATURES_PATH = "features_selected.npy"
 
-st.markdown("### Upload model files:")
-up_model = st.file_uploader("meta_logreg.joblib", type=["joblib", "pkl"])
-up_scaler = st.file_uploader("scaler.joblib", type=["joblib", "pkl"])
-up_imputer = st.file_uploader("imputer.joblib", type=["joblib", "pkl"])
-up_feats = st.file_uploader("features_selected.npy (optional)", type=["npy"])
-
-if st.button("Save uploaded files"):
-    if up_model: open(MODEL_PATH, "wb").write(up_model.read())
-    if up_scaler: open(SCALER_PATH, "wb").write(up_scaler.read())
-    if up_imputer: open(IMPUTER_PATH, "wb").write(up_imputer.read())
-    if up_feats: open(FEATURES_PATH, "wb").write(up_feats.read())
-    st.success("✅ Uploaded files saved successfully. Click 'Rerun' to load them.")
-
-# =============================
-# تحميل الموديلات
-# =============================
 def load_artifacts():
     model = joblib.load(MODEL_PATH)
     scaler = joblib.load(SCALER_PATH)
     imputer = joblib.load(IMPUTER_PATH)
-    selected_idx = None
-    if os.path.exists(FEATURES_PATH):
-        selected_idx = np.load(FEATURES_PATH)
+    selected_idx = np.load(FEATURES_PATH) if os.path.exists(FEATURES_PATH) else None
     return model, scaler, imputer, selected_idx
 
 try:
     model, scaler, imputer, selected_idx = load_artifacts()
 except Exception as e:
+    st.warning("Upload model files first to start predictions.")
     st.stop()
-    st.error(f"❌ Failed to load model: {e}")
 
 # =============================
-# استخراج المميزات
+# Feature extraction
 # =============================
 def extract_micro_features(sig):
     sig = np.asarray(sig, dtype=float)
@@ -72,7 +54,7 @@ def extract_micro_features(sig):
     ])
 
 # =============================
-# ضبط الأبعاد + تطبيق feature selection
+# Utility alignment
 # =============================
 def align(X, expected):
     if X.ndim == 1:
@@ -80,8 +62,7 @@ def align(X, expected):
     if expected is None:
         return X
     if X.shape[1] < expected:
-        add = expected - X.shape[1]
-        X = np.hstack([X, np.zeros((X.shape[0], add))])
+        X = np.hstack([X, np.zeros((X.shape[0], expected - X.shape[1]))])
     elif X.shape[1] > expected:
         X = X[:, :expected]
     return X
@@ -120,8 +101,7 @@ if mode == "Raw ECG (.hea + .dat)":
             feats = apply_feature_selection(feats, selected_idx)
             feats = align(feats, len(imputer.statistics_))
             X_imp = imputer.transform(feats)
-            X_imp = align(X_imp, len(scaler.mean_))
-            X_scaled = scaler.transform(X_imp)
+            X_scaled = scaler.transform(align(X_imp, len(scaler.mean_)))
             X_scaled = align(X_scaled, getattr(model, "n_features_in_", X_scaled.shape[1]))
 
             prob = model.predict_proba(X_scaled)[0, 1]
@@ -129,14 +109,33 @@ if mode == "Raw ECG (.hea + .dat)":
 
             st.metric("Result", label, delta=f"{prob*100:.2f}%")
 
-            # ====== جراف احترافي ======
-            fig, ax = plt.subplots(figsize=(4, 1.5))
+            # ====== Chart 1: Horizontal Bar ======
+            fig1, ax1 = plt.subplots(figsize=(4, 1.5))
             bar_color = "#ff6b6b" if prob >= threshold else "#6cc070"
-            ax.barh(["Stroke Risk"], [prob], color=bar_color)
-            ax.set_xlim(0, 1)
-            ax.set_xlabel("Probability")
-            ax.set_title("Risk Probability")
-            st.pyplot(fig)
+            ax1.barh(["Stroke Risk"], [prob], color=bar_color)
+            ax1.set_xlim(0, 1)
+            ax1.set_xlabel("Probability")
+            ax1.set_title("Risk Probability")
+            st.pyplot(fig1)
+
+            # ====== Chart 2: Pie Chart ======
+            fig2, ax2 = plt.subplots(figsize=(3, 3))
+            ax2.pie(
+                [prob, 1 - prob],
+                labels=["Risk", "Safe"],
+                autopct="%1.1f%%",
+                colors=["#ff6b6b", "#6cc070"],
+                startangle=90
+            )
+            ax2.set_title("Risk Distribution")
+            st.pyplot(fig2)
+
+            # ====== Final Message ======
+            st.markdown("---")
+            if prob >= threshold:
+                st.markdown("<h3 style='color:#e74c3c;text-align:center;'>The patient is at high risk ⚠️</h3>", unsafe_allow_html=True)
+            else:
+                st.markdown("<h3 style='color:#27ae60;text-align:center;'>The patient is healthy ✅</h3>", unsafe_allow_html=True)
 
         except Exception as e:
             st.error(f"❌ Error processing ECG: {e}")
@@ -152,8 +151,7 @@ else:
             X = apply_feature_selection(X, selected_idx)
             X = align(X, len(imputer.statistics_))
             X_imp = imputer.transform(X)
-            X_imp = align(X_imp, len(scaler.mean_))
-            X_scaled = scaler.transform(X_imp)
+            X_scaled = scaler.transform(align(X_imp, len(scaler.mean_)))
             X_scaled = align(X_scaled, getattr(model, "n_features_in_", X_scaled.shape[1]))
 
             probs = model.predict_proba(X_scaled)[:, 1]
@@ -167,29 +165,34 @@ else:
             st.dataframe(df_out.head(10))
             st.line_chart(probs, height=150)
 
-            buf = BytesIO()
-            df_out.to_csv(buf, index=False)
-            st.download_button("⬇️ Download Predictions CSV", buf.getvalue(),
-                               file_name="batch_predictions.csv", mime="text/csv")
-
             avg_prob = np.mean(probs)
-            fig, ax = plt.subplots(figsize=(4, 1.5))
-            ax.barh(["Average Risk"], [avg_prob], color="#ff6b6b" if avg_prob > threshold else "#6cc070")
-            ax.set_xlim(0, 1)
-            ax.set_xlabel("Average Probability")
-            st.pyplot(fig)
+
+            # ====== Chart 1: Average Risk ======
+            fig1, ax1 = plt.subplots(figsize=(4, 1.5))
+            ax1.barh(["Average Risk"], [avg_prob],
+                     color="#ff6b6b" if avg_prob > threshold else "#6cc070")
+            ax1.set_xlim(0, 1)
+            ax1.set_xlabel("Average Probability")
+            st.pyplot(fig1)
+
+            # ====== Chart 2: Pie Chart ======
+            fig2, ax2 = plt.subplots(figsize=(3, 3))
+            ax2.pie(
+                [avg_prob, 1 - avg_prob],
+                labels=["Risk", "Safe"],
+                autopct="%1.1f%%",
+                colors=["#ff6b6b", "#6cc070"],
+                startangle=90
+            )
+            ax2.set_title("Overall Risk Distribution")
+            st.pyplot(fig2)
+
+            # ====== Final Message ======
+            st.markdown("---")
+            if avg_prob >= threshold:
+                st.markdown("<h3 style='color:#e74c3c;text-align:center;'>The patient is at high risk ⚠️</h3>", unsafe_allow_html=True)
+            else:
+                st.markdown("<h3 style='color:#27ae60;text-align:center;'>The patient is healthy ✅</h3>", unsafe_allow_html=True)
 
         except Exception as e:
             st.error(f"❌ Error processing file: {e}")
-
-# =============================
-# FOOTER
-# =============================
-st.markdown("---")
-st.markdown("""
-✅ **Final Notes**
-- Automatic feature alignment for Imputer, Scaler, and Model.  
-- Silent mode (no info messages).  
-- Visual bar chart for stroke risk probability.  
-- For research purposes only — not a medical diagnosis tool.
-""")
