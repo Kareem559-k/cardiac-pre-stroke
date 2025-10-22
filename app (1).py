@@ -1,9 +1,10 @@
 import streamlit as st
 import numpy as np
 import pandas as pd
-import joblib, os, glob
+import joblib, os, glob, time
 import matplotlib.pyplot as plt
 from matplotlib import cm
+from matplotlib.animation import FuncAnimation
 from io import BytesIO
 from scipy.stats import skew, kurtosis
 
@@ -13,9 +14,11 @@ try:
 except Exception:
     WFDB_OK = False
 
-st.set_page_config(page_title="🩺 ECG Stroke Predictor — Visual Edition", page_icon="💙", layout="wide")
-st.title("💎 ECG Stroke Predictor — Visual Dashboard Edition")
+st.set_page_config(page_title="🩺 ECG Stroke Predictor — Premium Visual Edition", page_icon="💙", layout="wide")
+st.title("💎 ECG Stroke Predictor — Premium Visual Edition")
+st.caption("Visual micro-dynamics dashboard with animation, radar charts, and probability analytics.")
 
+# ------------------ Model Loading ------------------
 MODEL_PATH, SCALER_PATH, IMPUTER_PATH = "meta_logreg.joblib", "scaler.joblib", "imputer.joblib"
 
 @st.cache_resource
@@ -33,6 +36,16 @@ if folders:
                 joblib.dump(joblib.load(src), n)
         st.success("✅ Loaded models from folder.")
 
+col1, col2, col3 = st.columns(3)
+with col1: up_m = st.file_uploader("meta_logreg.joblib", type=["joblib"])
+with col2: up_s = st.file_uploader("scaler.joblib", type=["joblib"])
+with col3: up_i = st.file_uploader("imputer.joblib", type=["joblib"])
+if st.button("Save uploaded models"):
+    if up_m: open(MODEL_PATH,"wb").write(up_m.read())
+    if up_s: open(SCALER_PATH,"wb").write(up_s.read())
+    if up_i: open(IMPUTER_PATH,"wb").write(up_i.read())
+    st.success("✅ Saved uploaded model files.")
+
 @st.cache_resource
 def load_models():
     model = joblib.load(MODEL_PATH)
@@ -47,7 +60,7 @@ except Exception as e:
     st.stop()
     st.error(f"❌ Error loading models: {e}")
 
-# ========== Feature helpers ==========
+# ------------------ Feature Extraction ------------------
 def extract_micro_features(sig):
     s = np.asarray(sig, dtype=float)
     return np.array([
@@ -69,18 +82,18 @@ def exp_i(): return getattr(imputer,"statistics_",None).shape[0]
 def exp_s(): return getattr(scaler,"mean_",None).shape[0]
 def exp_m(): return getattr(model,"n_features_in_",None)
 
-# ========== User Interface ==========
+# ------------------ Dashboard ------------------
 st.markdown("---")
 mode = st.radio("Choose input type:", ["Raw ECG (.hea/.dat)", "Feature file (CSV/NPY)"])
-threshold = st.slider("Decision threshold", 0.05, 0.95, 0.5, 0.01)
+threshold = st.slider("Decision threshold (probability ≥ this → High Risk)", 0.05, 0.95, 0.5, 0.01)
 
 def explain(prob):
     if prob >= threshold:
-        return f"🔴 **High stroke risk ({prob:.1%})**"
+        return f"🔴 **High stroke risk ({prob:.1%})** — patterns indicate elevated risk."
     else:
-        return f"🟢 **Normal ({prob:.1%})**"
+        return f"🟢 **Normal ({prob:.1%})** — signal appears typical."
 
-# ================= RAW ECG =================
+# ================== RAW ECG MODE ==================
 if mode == "Raw ECG (.hea/.dat)":
     hea = st.file_uploader("Upload .hea file", type=["hea"])
     dat = st.file_uploader("Upload .dat file", type=["dat"])
@@ -91,11 +104,18 @@ if mode == "Raw ECG (.hea/.dat)":
         rec = rdrecord(base)
         sig = rec.p_signal[:,0]
 
-        st.subheader("📈 ECG Wave Simulation")
-        idx = st.slider("Move along signal timeline", 0, len(sig)-1000, 0, 200)
-        st.line_chart(sig[idx:idx+1000], height=200)
-        st.caption("Drag the slider to simulate live ECG movement.")
+        st.subheader("📈 Animated ECG Wave")
+        placeholder = st.empty()
+        animate = st.checkbox("▶ Animate ECG signal", value=True)
+        idx = 0
+        window = 500
+        while animate:
+            placeholder.line_chart(sig[idx:idx+window], height=200)
+            idx = (idx + 50) % len(sig)
+            time.sleep(0.1)
+            if not animate: break
 
+        # Features
         feats = extract_micro_features(sig).reshape(1,-1)
         feats = align_to(feats, exp_i())
         X_imp = imputer.transform(feats)
@@ -107,11 +127,12 @@ if mode == "Raw ECG (.hea/.dat)":
         st.markdown("### Prediction Result")
         st.write(explain(prob))
 
+        # =============== Visuals ===============
         colA, colB = st.columns([1,1])
         with colA:
             fig, ax = plt.subplots()
-            ax.bar(["Normal","Stroke Risk"], [1-prob, prob], color=["#6CC070","#E74C3C"])
-            ax.set_title("Probability Bar Chart")
+            bars = ax.bar(["Normal","Stroke Risk"], [1-prob, prob], color=["#6CC070","#E74C3C"])
+            ax.set_title("Probability Distribution")
             st.pyplot(fig)
 
         with colB:
@@ -132,7 +153,7 @@ if mode == "Raw ECG (.hea/.dat)":
         df["Probability"] = prob
         st.dataframe(df.T.rename(columns={0:"value"}))
 
-# ================= BATCH MODE =================
+# ================== BATCH FEATURE MODE ==================
 else:
     uploaded = st.file_uploader("Upload features file (CSV/NPY)", type=["csv","npy"])
     if uploaded:
@@ -152,13 +173,13 @@ else:
         with col1:
             fig, ax = plt.subplots()
             ax.hist(probs, bins=20, color="#5DADE2", alpha=0.7)
-            ax.set_title("Probability Histogram")
+            ax.set_title("Probability Distribution (Histogram)")
             st.pyplot(fig)
 
         with col2:
             fig2, ax2 = plt.subplots()
             ax2.plot(probs, color="#AF7AC5")
-            ax2.set_title("Probability Trend Line")
+            ax2.set_title("Probability Line Trend")
             st.pyplot(fig2)
 
         buf = BytesIO()
@@ -167,8 +188,8 @@ else:
 
 st.markdown("---")
 st.markdown("""
-**Notes**
-- Use the slider to simulate ECG motion instead of live animation.
-- Radar, histogram, and line charts show signal and model details.
-- For education/research only.
+**Notes:**
+- Lower threshold for more sensitivity.
+- Animated ECG wave can be paused/resumed.
+- This app is for educational and research visualization only, not a medical diagnosis.
 """)
