@@ -11,14 +11,19 @@ st.set_page_config(page_title="🫀 ECG Stroke Predictor (Micro-Dynamics)", page
 st.markdown("""
     <style>
     body { background-color: #f8fafc; }
-    .stButton>button { background-color: #007bff; color: white; border-radius: 8px; height: 3em; font-weight:600; width:100%; }
+    .stButton>button {
+        background-color: #007bff; color: white;
+        border-radius: 8px; height: 3em;
+        font-weight:600; width:100%;
+    }
     h1 { color: #0056b3; text-align:center; }
     </style>
 """, unsafe_allow_html=True)
 
 st.title("🩺 ECG Stroke Prediction (Micro-Dynamics Enabled)")
-st.caption("Upload raw ECG signals (.hea / .dat) or precomputed features (CSV / NPY). The app will extract micro-dynamics automatically and predict stroke risk.")
+st.caption("Upload raw ECG signals (.hea / .dat) or precomputed features (CSV / NPY). The app automatically extracts micro-dynamics features and predicts stroke risk.")
 
+# === المسارات
 MODEL_PATH = "meta_logreg.joblib"
 SCALER_PATH = "scaler.joblib"
 IMPUTER_PATH = "imputer.joblib"
@@ -50,13 +55,19 @@ else:
 
 # === دالة استخراج الميكرو دايناميكس ===
 def extract_micro_features(signal):
-    signal = np.array(signal)
-    return [
-        np.mean(signal), np.std(signal), np.min(signal), np.max(signal),
-        np.ptp(signal), np.sqrt(np.mean(signal**2)),
-        np.median(signal), np.percentile(signal,25), np.percentile(signal,75),
-        skew(signal), kurtosis(signal)
-    ]
+    return {
+        "mean": np.mean(signal),
+        "std": np.std(signal),
+        "min": np.min(signal),
+        "max": np.max(signal),
+        "ptp": np.ptp(signal),
+        "rms": np.sqrt(np.mean(signal**2)),
+        "median": np.median(signal),
+        "p25": np.percentile(signal, 25),
+        "p75": np.percentile(signal, 75),
+        "skew": skew(signal),
+        "kurtosis": kurtosis(signal)
+    }
 
 # === الواجهة الرئيسية بعد تحميل الموديل ===
 if model is not None:
@@ -76,10 +87,23 @@ if model is not None:
 
             try:
                 rec = rdrecord(hea_file.name.replace(".hea", ""))
-                signal = rec.p_signal[:, 0]  # قناة واحدة فقط للتحليل
+                signal = rec.p_signal[:, 0]  # قناة واحدة للتحليل فقط
+
+                st.subheader("📊 ECG Signal Preview")
                 st.line_chart(signal[:2000], height=200, use_container_width=True)
 
-                feats = np.array(extract_micro_features(signal)).reshape(1, -1)
+                # 🧠 استخراج المميزات
+                feats_dict = extract_micro_features(signal)
+                feats = np.array(list(feats_dict.values())).reshape(1, -1)
+
+                # 🔧 تعديل الأبعاد لو ناقص
+                expected_features = imputer.statistics_.shape[0]
+                if feats.shape[1] < expected_features:
+                    missing = expected_features - feats.shape[1]
+                    feats = np.hstack([feats, np.zeros((1, missing))])
+                    st.warning(f"⚠️ Added {missing} placeholder features (auto-aligned).")
+
+                # ✅ التنبؤ
                 X_imp = imputer.transform(feats)
                 X_scaled = scaler.transform(X_imp)
                 prob = model.predict_proba(X_scaled)[0, 1]
@@ -88,11 +112,17 @@ if model is not None:
                 st.subheader("🔍 Prediction Result")
                 st.metric("Result", pred, delta=f"{prob*100:.2f}% Probability")
 
-                # عرض الرسم البياني للاحتمال
+                # 🎨 رسم بياني للاحتمال
                 fig, ax = plt.subplots()
-                ax.bar(["Normal", "Stroke Risk"], [1-prob, prob])
+                ax.bar(["Normal", "Stroke Risk"], [1-prob, prob], color=["#6cc070", "#ff6b6b"])
                 ax.set_ylabel("Probability")
+                ax.set_title("Stroke Risk Probability")
                 st.pyplot(fig)
+
+                # 🧾 جدول المميزات
+                st.markdown("### 📈 Extracted Micro-Dynamics Features")
+                df_feats = pd.DataFrame(feats_dict.items(), columns=["Feature", "Value"])
+                st.dataframe(df_feats.style.format({"Value": "{:.5f}"}))
 
             except Exception as e:
                 st.error(f"❌ Error processing ECG: {e}")
@@ -115,5 +145,7 @@ if model is not None:
 
                 st.subheader("🔍 Prediction Result")
                 st.metric("Overall", pred, delta=f"{avg_prob*100:.1f}% Probability")
+
+                st.line_chart(probs, height=150)
             except Exception as e:
                 st.error(f"❌ Error during prediction: {e}")
