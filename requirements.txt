@@ -2,10 +2,4 @@ streamlit
 numpy
 pandas
 scikit-learn
-xgboost
-lightgbm
 joblib
-wfdb
-PyWavelets
-scipy
-matplotlib
