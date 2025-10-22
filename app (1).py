@@ -7,7 +7,7 @@ from wfdb import rdrecord
 import matplotlib.pyplot as plt
 from io import BytesIO
 
-st.set_page_config(page_title="🫀 ECG Stroke Predictor (Micro-Dynamics)", page_icon="💙", layout="centered")
+st.set_page_config(page_title="🫀 ECG Stroke Predictor", page_icon="💙", layout="centered")
 
 st.markdown("""
     <style>
@@ -21,15 +21,15 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🩺 ECG Stroke Prediction (Micro-Dynamics Enabled)")
-st.caption("Upload raw ECG signals (.hea / .dat) or precomputed features (CSV / NPY). The app extracts micro-dynamics features automatically and predicts stroke risk.")
+st.title("🩺 ECG Stroke Prediction (Auto Micro-Dynamics)")
+st.caption("Upload raw ECG signals (.hea / .dat) or features (CSV / NPY). The app auto-extracts micro-dynamics, aligns features, and predicts stroke risk instantly.")
 
-# === مسارات الملفات
+# === مسارات الموديل
 MODEL_PATH = "meta_logreg.joblib"
 SCALER_PATH = "scaler.joblib"
 IMPUTER_PATH = "imputer.joblib"
 
-# === تحميل الموديل
+# === تحميل الموديلات
 def load_artifacts():
     model = joblib.load(MODEL_PATH)
     scaler = joblib.load(SCALER_PATH)
@@ -38,7 +38,7 @@ def load_artifacts():
 
 model = scaler = imputer = None
 
-# === التحقق من وجود الملفات
+# === تحميل ملفات الموديل
 if not (os.path.exists(MODEL_PATH) and os.path.exists(SCALER_PATH) and os.path.exists(IMPUTER_PATH)):
     st.info("⚙️ Please upload model files (.joblib) first.")
     meta = st.file_uploader("Upload meta_logreg.joblib", type=["joblib"], key="meta")
@@ -49,34 +49,54 @@ if not (os.path.exists(MODEL_PATH) and os.path.exists(SCALER_PATH) and os.path.e
         with open(MODEL_PATH, "wb") as f: f.write(meta.read())
         with open(SCALER_PATH, "wb") as f: f.write(scale.read())
         with open(IMPUTER_PATH, "wb") as f: f.write(imp.read())
-        st.success("✅ Model files uploaded and ready.")
+        st.success("✅ Model files uploaded successfully!")
         model, scaler, imputer = load_artifacts()
 else:
     model, scaler, imputer = load_artifacts()
 
-# === دالة استخراج الميكرو دايناميكس ===
+# === دالة استخراج الميكرو دايناميكس
 def extract_micro_features(signal):
-    return {
-        "mean": np.mean(signal),
-        "std": np.std(signal),
-        "min": np.min(signal),
-        "max": np.max(signal),
-        "ptp": np.ptp(signal),
-        "rms": np.sqrt(np.mean(signal**2)),
-        "median": np.median(signal),
-        "p25": np.percentile(signal, 25),
-        "p75": np.percentile(signal, 75),
-        "skew": skew(signal),
-        "kurtosis": kurtosis(signal)
-    }
+    return [
+        np.mean(signal),
+        np.std(signal),
+        np.min(signal),
+        np.max(signal),
+        np.ptp(signal),
+        np.sqrt(np.mean(signal**2)),
+        np.median(signal),
+        np.percentile(signal, 25),
+        np.percentile(signal, 75),
+        skew(signal),
+        kurtosis(signal)
+    ]
 
-# === الواجهة الرئيسية ===
+# === دالة لضبط عدد الأعمدة أوتوماتيك
+def auto_align_features(X, scaler, imputer):
+    expected = None
+    if hasattr(scaler, "mean_"):
+        expected = len(scaler.mean_)
+    elif hasattr(imputer, "statistics_"):
+        expected = len(imputer.statistics_)
+    else:
+        expected = X.shape[1]
+
+    if X.shape[1] < expected:
+        diff = expected - X.shape[1]
+        X = np.hstack([X, np.zeros((X.shape[0], diff))])
+        st.warning(f"⚠️ Added {diff} missing features (auto-aligned).")
+    elif X.shape[1] > expected:
+        diff = X.shape[1] - expected
+        X = X[:, :expected]
+        st.warning(f"⚠️ Trimmed {diff} extra features (auto-aligned).")
+    return X
+
+# === التطبيق بعد تحميل الموديل
 if model is not None:
-    st.success("✅ Model loaded successfully! Ready for prediction.")
+    st.success("✅ Model loaded and ready.")
     st.markdown("---")
     st.header("📂 Upload ECG Data")
 
-    data_type = st.radio("Choose input type:", ["Raw ECG (.hea / .dat)", "Preprocessed Features (CSV / NPY)"])
+    data_type = st.radio("Choose input type:", ["Raw ECG (.hea / .dat)", "Preprocessed Features (CSV / NPY)", "Multiple ECG Files (.zip)"])
 
     if data_type == "Raw ECG (.hea / .dat)":
         hea_file = st.file_uploader("Upload .hea file", type=["hea"])
@@ -88,27 +108,15 @@ if model is not None:
 
             try:
                 rec = rdrecord(hea_file.name.replace(".hea", ""))
-                signal = rec.p_signal[:, 0]  # قناة واحدة للتحليل فقط
+                signal = rec.p_signal[:, 0]
 
                 st.subheader("📊 ECG Signal Preview")
                 st.line_chart(signal[:2000], height=200, use_container_width=True)
 
-                # 🧠 استخراج المميزات
-                feats_dict = extract_micro_features(signal)
-                feats = np.array(list(feats_dict.values())).reshape(1, -1)
+                feats = np.array(extract_micro_features(signal)).reshape(1, -1)
+                feats = auto_align_features(feats, scaler, imputer)
 
-                # ⚙️ ضبط الأبعاد تلقائيًا بناءً على عدد الخصائص اللي الموديل متوقعها
-                expected_features = getattr(scaler, "mean_", np.zeros((1,))).shape[0]
-                if feats.shape[1] < expected_features:
-                    missing = expected_features - feats.shape[1]
-                    feats = np.hstack([feats, np.zeros((1, missing))])
-                    st.warning(f"⚠️ Added {missing} placeholder features (auto-aligned).")
-                elif feats.shape[1] > expected_features:
-                    extra = feats.shape[1] - expected_features
-                    feats = feats[:, :expected_features]
-                    st.warning(f"⚠️ Trimmed {extra} extra features (auto-aligned).")
-
-                # ✅ التنبؤ
+                # التنبؤ
                 X_imp = imputer.transform(feats)
                 X_scaled = scaler.transform(X_imp)
                 prob = model.predict_proba(X_scaled)[0, 1]
@@ -117,69 +125,58 @@ if model is not None:
                 st.subheader("🔍 Prediction Result")
                 st.metric("Result", pred, delta=f"{prob*100:.2f}% Probability")
 
-                # 🎨 رسم بياني للاحتمال
+                # رسم بياني
                 fig, ax = plt.subplots()
                 ax.bar(["Normal", "Stroke Risk"], [1-prob, prob], color=["#6cc070", "#ff6b6b"])
                 ax.set_ylabel("Probability")
                 ax.set_title("Stroke Risk Probability")
                 st.pyplot(fig)
 
-                # 🧾 جدول المميزات
+                # جدول القيم
+                cols = ["mean","std","min","max","ptp","rms","median","p25","p75","skew","kurtosis"]
+                df_feats = pd.DataFrame([extract_micro_features(signal)], columns=cols)
+                df_feats["Stroke Probability"] = prob
+                df_feats["Prediction"] = pred
                 st.markdown("### 📈 Extracted Micro-Dynamics Features")
-                df_feats = pd.DataFrame(feats_dict.items(), columns=["Feature", "Value"])
-                st.dataframe(df_feats.style.format({"Value": "{:.5f}"}))
+                st.dataframe(df_feats.style.format(precision=5))
 
-                # 💾 تجهيز ملف CSV للتحميل
-                df_out = df_feats.copy()
-                df_out["Stroke Probability"] = prob
-                df_out["Prediction"] = pred
-                csv_buffer = BytesIO()
-                df_out.to_csv(csv_buffer, index=False)
-                st.download_button(
-                    label="⬇️ Download Results as CSV",
-                    data=csv_buffer.getvalue(),
-                    file_name="ecg_prediction_results.csv",
-                    mime="text/csv"
-                )
+                # تحميل CSV
+                csv_buf = BytesIO()
+                df_feats.to_csv(csv_buf, index=False)
+                st.download_button("⬇️ Download Results as CSV", data=csv_buf.getvalue(),
+                    file_name="ecg_prediction_results.csv", mime="text/csv")
 
             except Exception as e:
                 st.error(f"❌ Error processing ECG: {e}")
 
-    else:
-        uploaded = st.file_uploader("Upload feature file", type=["csv","npy"])
-        if uploaded is not None:
+    elif data_type == "Preprocessed Features (CSV / NPY)":
+        uploaded = st.file_uploader("Upload feature file", type=["csv", "npy"])
+        if uploaded:
             try:
-                if uploaded.name.endswith(".csv"):
-                    df = pd.read_csv(uploaded)
-                    X = df.values
-                else:
-                    X = np.load(uploaded)
-
+                X = pd.read_csv(uploaded).values if uploaded.name.endswith(".csv") else np.load(uploaded)
+                X = auto_align_features(X, scaler, imputer)
                 X_imp = imputer.transform(X)
                 X_scaled = scaler.transform(X_imp)
                 probs = model.predict_proba(X_scaled)[:, 1]
-                avg_prob = np.mean(probs)
-                pred = "⚠️ High Stroke Risk" if avg_prob >= 0.5 else "✅ Normal ECG"
+                preds = (probs >= 0.5).astype(int)
 
-                st.subheader("🔍 Prediction Result")
-                st.metric("Overall", pred, delta=f"{avg_prob*100:.1f}% Probability")
-
-                st.line_chart(probs, height=150)
-
-                # 💾 حفظ النتائج في CSV
                 df_out = pd.DataFrame({
                     "Sample": np.arange(1, len(probs)+1),
                     "Probability": probs,
-                    "Prediction": np.where(probs >= 0.5, "Stroke Risk", "Normal")
+                    "Prediction": np.where(preds == 1, "Stroke Risk", "Normal")
                 })
-                csv_buffer = BytesIO()
-                df_out.to_csv(csv_buffer, index=False)
-                st.download_button(
-                    label="⬇️ Download Results as CSV",
-                    data=csv_buffer.getvalue(),
-                    file_name="ecg_batch_predictions.csv",
-                    mime="text/csv"
-                )
+
+                st.subheader("🔍 Batch Prediction Summary")
+                st.dataframe(df_out.head(10))
+                st.line_chart(probs, height=150)
+
+                csv_buf = BytesIO()
+                df_out.to_csv(csv_buf, index=False)
+                st.download_button("⬇️ Download All Predictions (CSV)", data=csv_buf.getvalue(),
+                    file_name="ecg_batch_predictions.csv", mime="text/csv")
 
             except Exception as e:
-                st.error(f"❌ Error during prediction: {e}")
+                st.error(f"❌ Error: {e}")
+
+    elif data_type == "Multiple ECG Files (.zip)":
+        st.info("💡 You can upload a ZIP file containing multiple .hea and .dat ECG pairs for batch analysis. (Feature coming soon 🚧)")
