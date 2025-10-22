@@ -1,147 +1,119 @@
-# app.py
 import streamlit as st
 import numpy as np
 import pandas as pd
 import joblib, os
-import io
+from scipy.stats import skew, kurtosis
+from wfdb import rdrecord
+import matplotlib.pyplot as plt
 
-# صفحة وإستايل بسيط
-st.set_page_config(page_title="🫀 ECG Stroke Predictor", page_icon="💙", layout="centered")
+st.set_page_config(page_title="🫀 ECG Stroke Predictor (Micro-Dynamics)", page_icon="💙", layout="centered")
+
 st.markdown("""
     <style>
     body { background-color: #f8fafc; }
-    .stButton>button { background-color: #007bff; color: white; border-radius: 8px; height: 3em; font-weight:600; }
+    .stButton>button { background-color: #007bff; color: white; border-radius: 8px; height: 3em; font-weight:600; width:100%; }
     h1 { color: #0056b3; text-align:center; }
     </style>
-    """, unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
-st.title("🩺 ECG Stroke Prediction")
-st.caption("Upload ECG features (CSV / NPY). If model files not present, upload them below.")
+st.title("🩺 ECG Stroke Prediction (Micro-Dynamics Enabled)")
+st.caption("Upload raw ECG signals (.hea / .dat) or precomputed features (CSV / NPY). The app will extract micro-dynamics automatically and predict stroke risk.")
 
-# ----- Paths الافتراضية (لو حطيت الملفات في الريبو) -----
 MODEL_PATH = "meta_logreg.joblib"
 SCALER_PATH = "scaler.joblib"
 IMPUTER_PATH = "imputer.joblib"
 
-# ----- دالة تحميل artifacts (تجرب وجودهم ثم تحميل) -----
-@st.cache_resource
-def try_load_saved_artifacts(mpath, spath, ipath):
-    loaded = {"model": None, "scaler": None, "imputer": None}
-    try:
-        if os.path.exists(mpath):
-            loaded["model"] = joblib.load(mpath)
-        if os.path.exists(spath):
-            loaded["scaler"] = joblib.load(spath)
-        if os.path.exists(ipath):
-            loaded["imputer"] = joblib.load(ipath)
-    except Exception as e:
-        st.warning(f"Warning while loading artifacts: {e}")
-    return loaded
+# === تحميل الموديل
+def load_artifacts():
+    model = joblib.load(MODEL_PATH)
+    scaler = joblib.load(SCALER_PATH)
+    imputer = joblib.load(IMPUTER_PATH)
+    return model, scaler, imputer
 
-# جرب تحميلهم من المسار الافتراضي
-art = try_load_saved_artifacts(MODEL_PATH, SCALER_PATH, IMPUTER_PATH)
+model = scaler = imputer = None
 
-# ----- واجهة رفع ملفات الموديل لو مش موجودين -----
-if art["model"] is None or art["scaler"] is None or art["imputer"] is None:
-    st.info("Model files not found in repo. You can upload them here (one-time).")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        mfile = st.file_uploader("Upload meta_logreg.joblib", type=["joblib","pkl"], key="mfile")
-    with col2:
-        sfile = st.file_uploader("Upload scaler.joblib", type=["joblib","pkl"], key="sfile")
-    with col3:
-        ifile = st.file_uploader("Upload imputer.joblib", type=["joblib","pkl"], key="ifile")
+# === التحقق من وجود الموديل
+if not (os.path.exists(MODEL_PATH) and os.path.exists(SCALER_PATH) and os.path.exists(IMPUTER_PATH)):
+    st.info("⚙️ Please upload model files (.joblib) first.")
+    meta = st.file_uploader("Upload meta_logreg.joblib", type=["joblib"], key="meta")
+    scale = st.file_uploader("Upload scaler.joblib", type=["joblib"], key="scale")
+    imp = st.file_uploader("Upload imputer.joblib", type=["joblib"], key="imp")
 
-    # لو رفع المستخدم الملفات — نحفظها محليًا في مجلد العمل ونحمّلها
-    if st.button("Save uploaded model files"):
-        saved_any = False
-        try:
-            if mfile is not None:
-                b = mfile.read()
-                with open(MODEL_PATH, "wb") as f: f.write(b)
-                saved_any = True
-            if sfile is not None:
-                b = sfile.read()
-                with open(SCALER_PATH, "wb") as f: f.write(b)
-                saved_any = True
-            if ifile is not None:
-                b = ifile.read()
-                with open(IMPUTER_PATH, "wb") as f: f.write(b)
-                saved_any = True
-            if saved_any:
-                st.success("✅ Uploaded files saved. Reloading artifacts...")
-                art = try_load_saved_artifacts(MODEL_PATH, SCALER_PATH, IMPUTER_PATH)
-            else:
-                st.warning("No files uploaded.")
-        except Exception as e:
-            st.error(f"Failed to save uploaded files: {e}")
+    if meta and scale and imp:
+        with open(MODEL_PATH, "wb") as f: f.write(meta.read())
+        with open(SCALER_PATH, "wb") as f: f.write(scale.read())
+        with open(IMPUTER_PATH, "wb") as f: f.write(imp.read())
+        st.success("✅ Model files uploaded and ready.")
+        model, scaler, imputer = load_artifacts()
+else:
+    model, scaler, imputer = load_artifacts()
 
-# --- Final check: هل الموديل جاهز؟
-if art["model"] is None or art["scaler"] is None or art["imputer"] is None:
-    st.warning("Model/scaler/imputer not yet loaded. Upload them or put them in the repo root.")
-    st.stop()
+# === دالة استخراج الميكرو دايناميكس ===
+def extract_micro_features(signal):
+    signal = np.array(signal)
+    return [
+        np.mean(signal), np.std(signal), np.min(signal), np.max(signal),
+        np.ptp(signal), np.sqrt(np.mean(signal**2)),
+        np.median(signal), np.percentile(signal,25), np.percentile(signal,75),
+        skew(signal), kurtosis(signal)
+    ]
 
-model = art["model"]
-scaler = art["scaler"]
-imputer = art["imputer"]
-st.success("✅ Model, scaler and imputer loaded and ready.")
+# === الواجهة الرئيسية بعد تحميل الموديل ===
+if model is not None:
+    st.success("✅ Model loaded successfully! Ready for prediction.")
+    st.markdown("---")
+    st.header("📂 Upload ECG Data")
 
-# ---------- Upload data ----------
-st.markdown("---")
-st.header("1) Upload ECG features (CSV or NPY)")
+    data_type = st.radio("Choose input type:", ["Raw ECG (.hea / .dat)", "Preprocessed Features (CSV / NPY)"])
 
-uploaded = st.file_uploader("Choose file (CSV or NPY)", type=["csv","npy"], key="datafile")
+    if data_type == "Raw ECG (.hea / .dat)":
+        hea_file = st.file_uploader("Upload .hea file", type=["hea"])
+        dat_file = st.file_uploader("Upload .dat file", type=["dat"])
 
-if uploaded is not None:
-    try:
-        if uploaded.name.endswith(".csv"):
-            df = pd.read_csv(uploaded)
-            X = df.values
-        else:
-            X = np.load(uploaded)
-            # create a dataframe for display if needed
-            df = pd.DataFrame(X)
-        st.info(f"Data shape: {X.shape}")
+        if hea_file and dat_file:
+            with open(hea_file.name, "wb") as f: f.write(hea_file.read())
+            with open(dat_file.name, "wb") as f: f.write(dat_file.read())
 
-        # preprocessing + predict
-        X_imp = imputer.transform(X)
-        X_scaled = scaler.transform(X_imp)
-
-        # predictions
-        if hasattr(model, "predict_proba"):
-            probs = model.predict_proba(X_scaled)[:,1]
-        else:
-            # if model is stacking dict object or similar
             try:
-                probs = model.predict_proba(X_scaled)[:,1]
-            except Exception:
-                probs = np.zeros(X_scaled.shape[0])
+                rec = rdrecord(hea_file.name.replace(".hea", ""))
+                signal = rec.p_signal[:, 0]  # قناة واحدة فقط للتحليل
+                st.line_chart(signal[:2000], height=200, use_container_width=True)
 
-        preds = (probs >= 0.5).astype(int)
-        avg_prob = np.mean(probs)
+                feats = np.array(extract_micro_features(signal)).reshape(1, -1)
+                X_imp = imputer.transform(feats)
+                X_scaled = scaler.transform(X_imp)
+                prob = model.predict_proba(X_scaled)[0, 1]
+                pred = "⚠️ High Stroke Risk" if prob >= 0.5 else "✅ Normal ECG"
 
-        # show summary
-        st.header("2) Prediction Summary")
-        label = "⚠️ High Stroke Risk" if avg_prob >= 0.5 else "✅ Normal"
-        st.metric("Overall Result", label, delta=f"Average probability: {avg_prob*100:.1f}%")
+                st.subheader("🔍 Prediction Result")
+                st.metric("Result", pred, delta=f"{prob*100:.2f}% Probability")
 
-        # detailed results table
-        results_df = pd.DataFrame({
-            "sample_index": np.arange(1, len(preds)+1),
-            "prediction": np.where(preds==1, "Stroke Risk", "Normal"),
-            "probability": np.round(probs, 4)
-        })
-        st.subheader("Detailed predictions")
-        st.dataframe(results_df)
+                # عرض الرسم البياني للاحتمال
+                fig, ax = plt.subplots()
+                ax.bar(["Normal", "Stroke Risk"], [1-prob, prob])
+                ax.set_ylabel("Probability")
+                st.pyplot(fig)
 
-        # ----- download button -----
-        csv_buf = results_df.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            label="⬇️ Download results as CSV",
-            data=csv_buf,
-            file_name="ecg_predictions_results.csv",
-            mime="text/csv",
-        )
+            except Exception as e:
+                st.error(f"❌ Error processing ECG: {e}")
 
-    except Exception as e:
-        st.error(f"Error during processing/prediction: {e}")
+    else:
+        uploaded = st.file_uploader("Upload feature file", type=["csv","npy"])
+        if uploaded is not None:
+            try:
+                if uploaded.name.endswith(".csv"):
+                    df = pd.read_csv(uploaded)
+                    X = df.values
+                else:
+                    X = np.load(uploaded)
+
+                X_imp = imputer.transform(X)
+                X_scaled = scaler.transform(X_imp)
+                probs = model.predict_proba(X_scaled)[:, 1]
+                avg_prob = np.mean(probs)
+                pred = "⚠️ High Stroke Risk" if avg_prob >= 0.5 else "✅ Normal ECG"
+
+                st.subheader("🔍 Prediction Result")
+                st.metric("Overall", pred, delta=f"{avg_prob*100:.1f}% Probability")
+            except Exception as e:
+                st.error(f"❌ Error during prediction: {e}")
