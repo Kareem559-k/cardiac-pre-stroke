@@ -8,3 +8,4 @@ joblib
 wfdb
 PyWavelets
 scipy
+matplotlib
