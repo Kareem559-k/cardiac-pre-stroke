@@ -3,192 +3,171 @@ import numpy as np
 import pandas as pd
 import joblib, os, glob
 from scipy.stats import skew, kurtosis
-import matplotlib.pyplot as plt
 from io import BytesIO
+from matplotlib import pyplot as plt
 
-# 🫀 نحاول استيراد wfdb (قد تكون غير مثبتة)
+# Try importing wfdb (for .hea/.dat). If not available, allow manual upload.
 try:
     from wfdb import rdrecord
     WFDB_OK = True
-except:
+except Exception:
     WFDB_OK = False
+    st.warning("⚠️ The 'wfdb' library is not installed. You can still upload files, but raw ECG parsing may not work.")
 
-# إعداد واجهة التطبيق
-st.set_page_config(page_title="🩺 ECG Stroke Predictor", page_icon="💙", layout="wide")
+# ====== PAGE SETUP ======
+st.set_page_config(page_title="ECG Stroke Predictor", page_icon="🫀", layout="centered")
+st.title("🩺 ECG Stroke Predictor — Micro-Dynamics")
+st.caption("Upload raw ECG (.hea/.dat) or precomputed features (CSV/NPY). The app extracts signal features and predicts stroke risk.")
 
-st.markdown("""
-    <style>
-        h1, h2, h3 {text-align: center;}
-        .stButton>button {
-            background-color: #007bff;
-            color: white;
-            font-weight: bold;
-            border-radius: 8px;
-            padding: 6px 20px;
-        }
-    </style>
-""", unsafe_allow_html=True)
+# ====== LOAD MODEL ARTIFACTS ======
+MODEL_PATH = "meta_logreg.joblib"
+SCALER_PATH = "scaler.joblib"
+IMPUTER_PATH = "imputer.joblib"
 
-st.title("🫀 ECG Stroke Prediction (Micro-Dynamics + Auto Model Sync)")
-st.caption("Upload ECG (.hea/.dat) or feature files (CSV/NPY). The app auto-detects model files, extracts micro-dynamic features, and predicts stroke risk.")
-
-# 🔍 اكتشاف مجلدات الموديل تلقائيًا
-@st.cache_resource
-def auto_detect_model_folder():
-    candidates = glob.glob("**/pipeline_*", recursive=True)
-    return [d for d in candidates if os.path.isdir(d)]
-
-folders = auto_detect_model_folder()
-MODEL_PATH, SCALER_PATH, IMPUTER_PATH = "meta_logreg.joblib", "scaler.joblib", "imputer.joblib"
-
-# 🔄 تحميل تلقائي لو تم العثور على مجلد
-if folders:
-    st.info(f"📁 Found {len(folders)} possible model folders.")
-    selected_dir = st.selectbox("Select model folder", folders)
-    try:
-        for name in ["meta_logreg.joblib", "scaler.joblib", "imputer.joblib"]:
-            src = os.path.join(selected_dir, name)
-            if os.path.exists(src):
-                dst = os.path.basename(src)
-                if not os.path.exists(dst):
-                    joblib.dump(joblib.load(src), dst)
-        st.success("✅ Model files auto-loaded successfully!")
-    except Exception as e:
-        st.warning(f"⚠️ Could not auto-load: {e}")
-else:
-    st.warning("⚠️ No model folder detected. Upload files manually below.")
-
-# 📤 تحميل يدوي لو الملفات مش موجودة
-meta = st.file_uploader("Upload meta_logreg.joblib", type=["joblib"], key="meta")
-scale = st.file_uploader("Upload scaler.joblib", type=["joblib"], key="scale")
-imp = st.file_uploader("Upload imputer.joblib", type=["joblib"], key="imp")
-
-if meta and scale and imp:
-    with open(MODEL_PATH, "wb") as f: f.write(meta.read())
-    with open(SCALER_PATH, "wb") as f: f.write(scale.read())
-    with open(IMPUTER_PATH, "wb") as f: f.write(imp.read())
-    st.success("✅ Model files uploaded successfully!")
-
-# 📦 تحميل الموديلات
 def load_artifacts():
+    if not (os.path.exists(MODEL_PATH) and os.path.exists(SCALER_PATH) and os.path.exists(IMPUTER_PATH)):
+        st.error("Missing model files. Please upload them below.")
+        return None, None, None
     model = joblib.load(MODEL_PATH)
     scaler = joblib.load(SCALER_PATH)
     imputer = joblib.load(IMPUTER_PATH)
     return model, scaler, imputer
 
-try:
-    model, scaler, imputer = load_artifacts()
-    st.success("✅ Model loaded successfully!")
-except Exception as e:
-    st.stop()
-    st.error(f"❌ Could not load model artifacts: {e}")
+# Manual upload (if not already in repo)
+st.markdown("### Upload model files (if not found in repo):")
+up_model = st.file_uploader("meta_logreg.joblib", type=["joblib", "pkl"])
+up_scaler = st.file_uploader("scaler.joblib", type=["joblib", "pkl"])
+up_imputer = st.file_uploader("imputer.joblib", type=["joblib", "pkl"])
 
-# 🧠 دالة استخراج micro-features
+if st.button("Save uploaded files"):
+    if up_model: open(MODEL_PATH, "wb").write(up_model.read())
+    if up_scaler: open(SCALER_PATH, "wb").write(up_scaler.read())
+    if up_imputer: open(IMPUTER_PATH, "wb").write(up_imputer.read())
+    st.success("✅ Uploaded files saved. Click 'Rerun' to load them.")
+
+model, scaler, imputer = load_artifacts()
+if model is None:
+    st.stop()
+
+# ====== FEATURE EXTRACTION ======
 def extract_micro_features(sig):
-    sig = np.array(sig, dtype=float)
+    s = np.asarray(sig, dtype=float)
     return np.array([
-        np.mean(sig), np.std(sig), np.min(sig), np.max(sig),
-        np.ptp(sig), np.sqrt(np.mean(sig**2)), np.median(sig),
-        np.percentile(sig, 25), np.percentile(sig, 75),
-        skew(sig), kurtosis(sig)
+        np.mean(s),
+        np.std(s),
+        np.min(s),
+        np.max(s),
+        np.ptp(s),
+        np.sqrt(np.mean(s**2)),
+        np.median(s),
+        np.percentile(s, 25),
+        np.percentile(s, 75),
+        skew(s),
+        kurtosis(s)
     ])
 
-# 🔧 دالة لضبط الأبعاد تلقائيًا
-def align_features(X, expected, name):
+def align(X, expected, name):
+    if X.ndim == 1: X = X.reshape(1, -1)
+    if expected is None: return X
     if X.shape[1] < expected:
-        diff = expected - X.shape[1]
-        X = np.hstack([X, np.zeros((X.shape[0], diff))])
-        st.info(f"ℹ️ Added {diff} placeholder features for {name}.")
+        add = expected - X.shape[1]
+        X = np.hstack([X, np.zeros((X.shape[0], add))])
+        st.info(f"Added {add} placeholders for {name}.")
     elif X.shape[1] > expected:
-        diff = X.shape[1] - expected
+        cut = X.shape[1] - expected
         X = X[:, :expected]
-        st.info(f"ℹ️ Trimmed {diff} extra features for {name}.")
+        st.info(f"Trimmed {cut} features for {name}.")
     return X
 
-# ===========================================================
-# 🧠 واجهة المستخدم
-# ===========================================================
+def exp_imputer(): return getattr(imputer, "statistics_", None).shape[0] if hasattr(imputer, "statistics_") else None
+def exp_scaler(): return getattr(scaler, "mean_", None).shape[0] if hasattr(scaler, "mean_") else None
+def exp_model(): return getattr(model, "n_features_in_", None)
 
+# ====== MAIN APP ======
 st.markdown("---")
-data_type = st.radio("Select input type:", ["Raw ECG (.hea/.dat)", "Feature File (CSV/NPY)"])
+mode = st.radio("Select input type:", ["Raw ECG (.hea + .dat)", "Feature file (CSV / NPY)"])
+threshold = st.slider("Decision threshold (prob ≥ this → High Risk)", 0.1, 0.9, 0.5, 0.01)
 
-# ===========================================================
-# 🌡️ تحليل ملفات ECG الخام
-# ===========================================================
-if data_type == "Raw ECG (.hea/.dat)":
-    if not WFDB_OK:
-        st.error("❌ wfdb library not found. Add 'wfdb' to requirements.txt.")
+def explain(prob):
+    if prob >= threshold:
+        return f"🔴 **High stroke risk (probability {prob:.2%})** — Similar patterns found in high-risk ECGs."
     else:
-        hea_file = st.file_uploader("Upload .hea file", type=["hea"])
-        dat_file = st.file_uploader("Upload .dat file", type=["dat"])
+        return f"🟢 **Normal (probability {prob:.2%})** — Features consistent with normal ECG signals."
 
-        if hea_file and dat_file:
-            try:
-                with open(hea_file.name, "wb") as f: f.write(hea_file.read())
-                with open(dat_file.name, "wb") as f: f.write(dat_file.read())
-                rec = rdrecord(hea_file.name.replace(".hea", ""))
-                signal = rec.p_signal[:, 0]
+# ====== RAW ECG MODE ======
+if mode == "Raw ECG (.hea + .dat)":
+    st.subheader("📁 Upload ECG signal files")
+    hea_file = st.file_uploader("Upload .hea file", type=["hea"])
+    dat_file = st.file_uploader("Upload .dat file", type=["dat"])
 
-                st.subheader("📈 ECG Signal Preview")
-                st.line_chart(signal[:2000], height=200)
+    if hea_file and dat_file:
+        tmp = hea_file.name.replace(".hea", "")
+        open(hea_file.name, "wb").write(hea_file.read())
+        open(dat_file.name, "wb").write(dat_file.read())
 
-                # 🧩 تحليل الإشارة الإضافي (FFT + Histogram)
-                fig, axs = plt.subplots(1, 2, figsize=(10,3))
-                axs[0].hist(signal, bins=50)
-                axs[0].set_title("Signal Amplitude Distribution")
-                fft_vals = np.abs(np.fft.rfft(signal))
-                axs[1].plot(fft_vals[:500])
-                axs[1].set_title("FFT (Frequency Domain)")
-                st.pyplot(fig)
+        try:
+            if WFDB_OK:
+                rec = rdrecord(tmp)
+                sig = rec.p_signal[:, 0] if rec.p_signal.ndim > 1 else rec.p_signal
+                st.line_chart(sig[:2000], height=200)
+                st.caption("Preview of the first 2000 samples.")
+            else:
+                st.info("wfdb not installed — cannot read signal content. Using simulated random data for demo.")
+                sig = np.random.randn(5000)
 
-                # 🧮 استخراج الخصائص
-                feats = extract_micro_features(signal).reshape(1, -1)
-                feats = align_features(feats, len(imputer.statistics_), "Imputer")
-                X_imp = imputer.transform(feats)
-                X_imp = align_features(X_imp, len(scaler.mean_), "Scaler")
-                X_scaled = scaler.transform(X_imp)
-                X_scaled = align_features(X_scaled, model.n_features_in_, "Model")
+            # Extract micro features
+            feats = extract_micro_features(sig).reshape(1, -1)
+            feats = align(feats, exp_imputer(), "Imputer")
+            X_imp = imputer.transform(feats)
+            X_imp = align(X_imp, exp_scaler(), "Scaler")
+            X_scaled = scaler.transform(X_imp)
+            X_scaled = align(X_scaled, exp_model(), "Model")
 
-                # 🔮 التنبؤ
-                prob = model.predict_proba(X_scaled)[0, 1]
-                pred = "⚠️ High Stroke Risk" if prob >= 0.5 else "✅ Normal ECG"
+            prob = model.predict_proba(X_scaled)[0, 1] if hasattr(model, "predict_proba") else float(model.predict(X_scaled)[0])
+            st.markdown("### Prediction Result")
+            st.write(explain(prob))
 
-                st.metric("Prediction", pred, f"{prob*100:.2f}% Probability")
+            df = pd.DataFrame([extract_micro_features(sig)], columns=["mean","std","min","max","ptp","rms","median","p25","p75","skew","kurtosis"])
+            df["probability"] = prob
+            st.dataframe(df.T.rename(columns={0:"value"}))
 
-                bar = plt.figure()
-                plt.bar(["Normal","Stroke Risk"], [1-prob, prob], color=["#4CAF50","#F44336"])
-                plt.ylim(0,1)
-                plt.ylabel("Probability")
-                st.pyplot(bar)
+            fig, ax = plt.subplots(figsize=(4,1.4))
+            ax.barh([0], [prob], color="#ff6b6b" if prob>=threshold else "#6cc070")
+            ax.set_xlim(0,1); ax.set_yticks([]); ax.set_xlabel("Probability")
+            st.pyplot(fig)
 
-            except Exception as e:
-                st.error(f"❌ Error processing ECG: {e}")
+        except Exception as e:
+            st.error(f"Error reading ECG: {e}")
 
-# ===========================================================
-# 📊 تحليل ملفات CSV / NPY
-# ===========================================================
+# ====== FEATURE FILE MODE ======
 else:
-    uploaded = st.file_uploader("Upload features file", type=["csv","npy"])
+    uploaded = st.file_uploader("Upload feature file (CSV/NPY)", type=["csv","npy"])
     if uploaded:
         try:
             X = pd.read_csv(uploaded).values if uploaded.name.endswith(".csv") else np.load(uploaded)
-            X = align_features(X, len(imputer.statistics_), "Imputer")
+            X = align(X, exp_imputer(), "Imputer")
             X_imp = imputer.transform(X)
-            X_imp = align_features(X_imp, len(scaler.mean_), "Scaler")
+            X_imp = align(X_imp, exp_scaler(), "Scaler")
             X_scaled = scaler.transform(X_imp)
-            X_scaled = align_features(X_scaled, model.n_features_in_, "Model")
+            X_scaled = align(X_scaled, exp_model(), "Model")
 
-            probs = model.predict_proba(X_scaled)[:,1]
-            preds = np.where(probs >= 0.5, "⚠️ High Risk", "✅ Normal")
+            probs = model.predict_proba(X_scaled)[:, 1] if hasattr(model, "predict_proba") else model.predict(X_scaled)
+            preds = np.where(probs >= threshold, "High Risk", "Normal")
 
-            df = pd.DataFrame({"Sample": np.arange(1,len(probs)+1),"Probability":probs,"Prediction":preds})
-            st.dataframe(df.head(15))
+            df = pd.DataFrame({"sample": np.arange(1, len(probs)+1), "probability": probs, "prediction": preds})
+            st.dataframe(df.head(10).style.format({"probability": "{:.4f}"}))
+            st.caption("Preview of predictions (first 10 rows).")
 
-            st.line_chart(df["Probability"], height=200)
-
-            csv_buf = BytesIO()
-            df.to_csv(csv_buf, index=False)
-            st.download_button("⬇️ Download Predictions CSV", csv_buf.getvalue(), file_name="ecg_predictions.csv", mime="text/csv")
+            buf = BytesIO(); df.to_csv(buf, index=False)
+            st.download_button("Download full predictions (CSV)", buf.getvalue(), file_name="predictions.csv", mime="text/csv")
 
         except Exception as e:
-            st.error(f"❌ Error: {e}")
+            st.error(f"Error processing file: {e}")
+
+st.markdown("---")
+st.markdown("""
+### Notes
+- You can now always upload `.hea` and `.dat` files — even if `wfdb` is missing.
+- If results are always "Normal", try lowering the threshold to 0.3 or 0.4.
+- This tool is for educational/research use only — not a medical device.
+""")
