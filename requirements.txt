@@ -5,3 +5,6 @@ scipy
 matplotlib
 joblib
 wfdb
+scikit-learn
+xgboost
+lightgbm
