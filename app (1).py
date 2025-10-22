@@ -1,37 +1,57 @@
-
 import streamlit as st
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
 
-st.set_page_config(page_title="Cardiac Pre-Stroke", layout="centered")
+# -------------------------------
+# 1. دالة لاستخراج Micro-Dynamics
+# -------------------------------
+def extract_micro_dynamics_features(ecg_data):
+    """
+    Takes a DataFrame or numpy array of ECG signals
+    and extracts Micro-Dynamics statistical features.
+    """
+    features = {}
+    ecg_array = ecg_data.values if isinstance(ecg_data, pd.DataFrame) else ecg_data
+
+    features['mean'] = np.mean(ecg_array, axis=1)
+    features['std'] = np.std(ecg_array, axis=1)
+    features['max'] = np.max(ecg_array, axis=1)
+    features['min'] = np.min(ecg_array, axis=1)
+    features['ptp'] = np.ptp(ecg_array, axis=1)  # Peak-to-peak range
+
+    # convert to DataFrame
+    features_df = pd.DataFrame(features)
+    return features_df
+
+# -------------------------------
+# 2. واجهة التطبيق
+# -------------------------------
 st.title("💓 Cardiac Pre-Stroke Predictor")
-st.markdown("Upload your ECG data to predict stroke risk.")
+st.write("Upload your ECG data to predict stroke risk.")
 
 uploaded_file = st.file_uploader("📤 Upload your ECG CSV file", type=["csv"])
 
+# -------------------------------
+# 3. التعامل مع الملف المرفوع
+# -------------------------------
 if uploaded_file is not None:
-    df = pd.read_csv(uploaded_file)
-    st.write("### Data Preview:")
-    st.dataframe(df.head())
+    data = pd.read_csv(uploaded_file)
+    st.subheader("📊 Data Preview:")
+    st.write(data.head())
 
-    X = df.drop(df.columns[-1], axis=1)
-    y = df[df.columns[-1]]
+    # استخراج الـ micro-dynamics
+    st.subheader("⚙️ Extracting Micro-Dynamics Features...")
+    micro_features = extract_micro_dynamics_features(data)
+    st.write("🧩 Micro-Dynamics Features Preview:", micro_features.head())
 
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+    # نموذج بسيط (مؤقت)
     model = RandomForestClassifier()
-    model.fit(X_train, y_train)
-    accuracy = model.score(X_test, y_test)
+    y_dummy = np.random.randint(0, 2, size=micro_features.shape[0])  # قيم افتراضية للتجريب
+    model.fit(micro_features, y_dummy)
 
-    st.write(f"✅ Model trained successfully with accuracy: **{accuracy*100:.2f}%**")
+    prediction = model.predict(micro_features.iloc[[0]])
+    st.success(f"Prediction: {'Stroke Risk ⚠️' if prediction[0] == 1 else 'Normal ✅'}")
 
-    sample = X_test.iloc[0:1]
-    prediction = model.predict(sample)
-    st.write("### 🧠 Prediction Result:")
-    if prediction[0] == 1:
-        st.error("⚠️ High risk of stroke detected!")
-    else:
-        st.success("✅ Normal condition detected.")
 else:
     st.info("Please upload an ECG CSV file to begin.")
