@@ -1,4 +1,4 @@
-# app.py — ECG Stroke Prediction (Final Streamlit Version)
+# app.py — ECG Stroke Prediction with Google Drive + Micro-Dynamics
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -7,54 +7,54 @@ from io import BytesIO
 from scipy.stats import skew, kurtosis
 import matplotlib.pyplot as plt
 
-# optional: ECG reading
+# optional ECG reader
 try:
     from wfdb import rdrecord
     WFDB_AVAILABLE = True
 except:
     WFDB_AVAILABLE = False
 
-# ========== CONFIG ==========
-st.set_page_config(page_title="🫀 ECG Stroke Prediction", page_icon="💓", layout="centered")
+# ========== PAGE CONFIG ==========
+st.set_page_config(page_title="🫀 ECG Stroke Predictor", page_icon="💓", layout="centered")
 
 st.markdown("""
     <style>
-    .stButton>button {background-color:#007bff; color:white; font-weight:600; border-radius:10px;}
-    h1 {text-align:center; color:#0056b3;}
+    .stButton>button {background-color:#007bff;color:white;font-weight:600;border-radius:10px;}
+    h1 {text-align:center;color:#0056b3;}
     </style>
 """, unsafe_allow_html=True)
 
 st.title("🩺 ECG Stroke Prediction using Micro-Dynamics 🧠")
-st.caption("Automatically extracts ECG micro-dynamics and predicts stroke risk. (with Drive integration)")
+st.caption("Loads model & preprocessing files automatically from Google Drive. Supports raw ECG and feature files.")
 
-# Google Drive file IDs (replace if needed)
+# ---------- 🔗 GOOGLE DRIVE FILE IDs ----------
 FILES = {
-    "model": "1IEv8elcXAiUUqXwjxJ8SoMx6wXJ1oy1Y",     # example placeholder
-    "scaler": "1vO2kY_iPGZuxpdk8xnnIkzM0fIrmTnfa",
-    "imputer": "1B5ifb3Ujj0YoXo7Z4Z8yTF0JKFZ7uR_n",
-    "features": "156hMAAq6_OUd-aka7FKdEtVRoI3HAoa4"  # ✅ your features_selected.npy
+    "model": "PUT_MODEL_ID_HERE",      # <-- بدّل بـ ID بتاع meta_logreg.joblib
+    "scaler": "PUT_SCALER_ID_HERE",    # <-- بدّل بـ ID بتاع scaler.joblib
+    "imputer": "PUT_IMPUTER_ID_HERE",  # <-- بدّل بـ ID بتاع imputer.joblib
+    "features": "156hMAAq6_OUd-aka7FKdEtVRoI3HAoa4"  # ✅ features_selected.npy
 }
 
-# download helper
-def download_if_missing(name, drive_id):
-    fname = f"{name}.joblib" if name != "features" else "features_selected.npy"
-    if not os.path.exists(fname):
+# ---------- 📥 DOWNLOAD HELPERS ----------
+def download_from_drive(name, drive_id):
+    """Download a file from Google Drive if missing"""
+    filename = f"{name}.joblib" if name != "features" else "features_selected.npy"
+    if not os.path.exists(filename):
         try:
             url = f"https://drive.google.com/uc?id={drive_id}"
-            st.info(f"📥 Downloading {fname} from Drive...")
-            gdown.download(url, fname, quiet=False)
-            st.success(f"✅ Downloaded {fname}")
+            st.info(f"📥 Downloading {filename} from Drive...")
+            gdown.download(url, filename, quiet=False)
+            st.success(f"✅ Downloaded {filename}")
         except Exception as e:
-            st.error(f"❌ Could not download {fname}: {e}")
-    return fname
+            st.error(f"❌ Could not download {filename}: {e}")
+    return filename
 
-# download needed files
-MODEL_FNAME = download_if_missing("model", FILES["model"])
-SCALER_FNAME = download_if_missing("scaler", FILES["scaler"])
-IMPUTER_FNAME = download_if_missing("imputer", FILES["imputer"])
-FEATURES_FNAME = download_if_missing("features", FILES["features"])
+MODEL_FNAME = download_from_drive("model", FILES["model"])
+SCALER_FNAME = download_from_drive("scaler", FILES["scaler"])
+IMPUTER_FNAME = download_from_drive("imputer", FILES["imputer"])
+FEATURES_FNAME = download_from_drive("features", FILES["features"])
 
-# load artifacts
+# ---------- 📦 LOAD ARTIFACTS ----------
 try:
     model = joblib.load(MODEL_FNAME)
     scaler = joblib.load(SCALER_FNAME)
@@ -63,11 +63,10 @@ try:
     st.success("✅ All model files loaded successfully.")
 except Exception as e:
     st.stop()
-    st.error(f"Failed to load artifacts: {e}")
+    st.error(f"Failed to load model artifacts: {e}")
 
-# ========== FEATURE EXTRACTION ==========
+# ---------- 🧠 MICRO-DYNAMICS FEATURE EXTRACTION ----------
 def extract_micro_features(sig):
-    """Extract ECG micro-dynamics features"""
     sig = np.array(sig, dtype=float)
     return np.array([
         np.mean(sig), np.std(sig), np.min(sig), np.max(sig),
@@ -78,7 +77,8 @@ def extract_micro_features(sig):
 
 def apply_selection(X):
     if selected_idx is not None and len(selected_idx) <= X.shape[1]:
-        return X[:, selected_idx]
+        X = X[:, selected_idx]
+        st.info(f"✅ Applied feature selection ({len(selected_idx)} features).")
     return X
 
 def align(X, expected):
@@ -88,17 +88,17 @@ def align(X, expected):
         st.warning(f"⚠️ Added {diff} placeholder features.")
     elif X.shape[1] > expected:
         X = X[:, :expected]
-        st.warning(f"⚠️ Trimmed {X.shape[1]-expected} features.")
+        st.warning(f"⚠️ Trimmed {X.shape[1]-expected} extra features.")
     return X
 
-# ========== UI ==========
+# ---------- 🧩 APP INTERFACE ----------
 st.markdown("---")
-mode = st.radio("Select input type:", ["Raw ECG (.hea + .dat)", "Features File (CSV / NPY)"])
+mode = st.radio("Choose input type:", ["Raw ECG (.hea + .dat)", "Features File (CSV / NPY)"])
 
-# ========== RAW ECG MODE ==========
+# ---------- 🫀 RAW ECG MODE ----------
 if mode == "Raw ECG (.hea + .dat)":
     if not WFDB_AVAILABLE:
-        st.error("wfdb library not found. Add it to requirements.txt and redeploy.")
+        st.error("wfdb not installed. Add it to requirements.txt and redeploy.")
     else:
         hea = st.file_uploader("Upload .hea file", type=["hea"])
         dat = st.file_uploader("Upload .dat file", type=["dat"])
@@ -112,28 +112,36 @@ if mode == "Raw ECG (.hea + .dat)":
             try:
                 rec = rdrecord(os.path.splitext(hea_path)[0])
                 signal = rec.p_signal[:,0]
+                st.subheader("📈 ECG Signal Preview")
                 st.line_chart(signal[:2000])
+
+                # Extract micro features
                 feats = extract_micro_features(signal).reshape(1,-1)
                 feats = apply_selection(feats)
                 feats = align(feats, len(imputer.statistics_))
                 feats = imputer.transform(feats)
                 feats = align(feats, len(scaler.mean_))
                 feats = scaler.transform(feats)
+
+                # Predict
                 prob = model.predict_proba(feats)[0,1]
-                pred = "⚠️ High Stroke Risk" if prob>=0.5 else "✅ Normal ECG"
-                st.metric("Prediction", pred, f"{prob*100:.2f}%")
+                pred = "⚠️ High Stroke Risk" if prob >= 0.5 else "✅ Normal ECG"
+                st.metric("Prediction", pred, f"{prob*100:.2f}% probability")
+
+                # Plot bar chart
                 fig, ax = plt.subplots()
-                ax.bar(["Normal","Stroke Risk"], [1-prob, prob])
+                ax.bar(["Normal","Stroke Risk"], [1-prob, prob], color=["#6cc070","#ff6b6b"])
                 ax.set_ylim(0,1)
+                ax.set_ylabel("Probability")
                 st.pyplot(fig)
             except Exception as e:
-                st.error(f"Error: {e}")
+                st.error(f"Error reading ECG: {e}")
             finally:
                 shutil.rmtree(tmpdir, ignore_errors=True)
 
-# ========== FEATURES FILE MODE ==========
+# ---------- 📊 FEATURE FILE MODE ----------
 else:
-    file = st.file_uploader("Upload CSV or NPY", type=["csv","npy"])
+    file = st.file_uploader("Upload CSV or NPY features file", type=["csv","npy"])
     if file:
         try:
             if file.name.endswith(".csv"):
@@ -145,12 +153,13 @@ else:
             X = imputer.transform(X)
             X = align(X, len(scaler.mean_))
             X = scaler.transform(X)
+
             probs = model.predict_proba(X)[:,1]
-            preds = np.where(probs>=0.5,"⚠️ Stroke Risk","✅ Normal")
-            df = pd.DataFrame({"Sample":np.arange(len(probs))+1,"Probability":probs,"Prediction":preds})
+            preds = np.where(probs>=0.5, "⚠️ Stroke Risk", "✅ Normal")
+            df = pd.DataFrame({"Sample":np.arange(1,len(probs)+1),"Probability":probs,"Prediction":preds})
             st.dataframe(df.head(15))
             st.line_chart(df["Probability"])
             csv = BytesIO(); df.to_csv(csv,index=False)
-            st.download_button("⬇️ Download CSV", csv.getvalue(), file_name="ecg_predictions.csv", mime="text/csv")
+            st.download_button("⬇️ Download Predictions", csv.getvalue(), file_name="ecg_predictions.csv", mime="text/csv")
         except Exception as e:
-            st.error(f"❌ Error: {e}")
+            st.error(f"❌ Error processing features file: {e}")
