@@ -1,7 +1,7 @@
 import streamlit as st
 import numpy as np
 import pandas as pd
-import joblib, os, glob
+import joblib, os
 from scipy.stats import skew, kurtosis
 from io import BytesIO
 from matplotlib import pyplot as plt
@@ -32,11 +32,12 @@ def load_artifacts():
     selected_idx = np.load(FEATURES_PATH) if os.path.exists(FEATURES_PATH) else None
     return model, scaler, imputer, selected_idx
 
-st.markdown("### Upload model files (if not found in repo):")
-meta = st.file_uploader("meta_logreg.joblib", type=["joblib"])
-scale = st.file_uploader("scaler.joblib", type=["joblib"])
-imp = st.file_uploader("imputer.joblib", type=["joblib"])
-feat = st.file_uploader("features_selected.npy", type=["npy"])
+# ===== MANUAL UPLOAD =====
+st.markdown("### 📤 Upload model files (if not found in repo):")
+meta = st.file_uploader("Upload meta_logreg.joblib", type=["joblib"])
+scale = st.file_uploader("Upload scaler.joblib", type=["joblib"])
+imp = st.file_uploader("Upload imputer.joblib", type=["joblib"])
+feat = st.file_uploader("Upload features_selected.npy", type=["npy"])
 
 if st.button("💾 Save uploaded files"):
     if meta: open(MODEL_PATH, "wb").write(meta.read())
