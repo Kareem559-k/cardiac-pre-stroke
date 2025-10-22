@@ -1,190 +1,125 @@
+# app.py - ECG Stroke Prediction (Drive-compatible)
 import streamlit as st
 import numpy as np
 import pandas as pd
-import joblib, os, glob
-from scipy.stats import skew, kurtosis
-from wfdb import rdrecord
-import matplotlib.pyplot as plt
+import joblib, os
 from io import BytesIO
+from scipy.stats import skew, kurtosis
+import matplotlib.pyplot as plt
 
-# 🩺 إعداد الصفحة
-st.set_page_config(page_title="ECG Stroke Predictor", page_icon="💙", layout="centered")
-st.title("🫀 ECG Stroke Prediction (Auto Model Detection + Micro-Dynamics)")
-st.caption("Upload ECG (.hea/.dat) or features (CSV/NPY). The app auto-detects model files, extracts features, and predicts stroke risk.")
+# optional
+try:
+    from wfdb import rdrecord
+    WFDB_AVAILABLE = True
+except:
+    WFDB_AVAILABLE = False
 
-# 🎯 خطوة 1: البحث عن الموديل تلقائيًا
-@st.cache_resource
-def auto_detect_model_folder():
-    candidates = glob.glob("**/pipeline_*", recursive=True)
-    valid_dirs = [d for d in candidates if os.path.isdir(d)]
-    return valid_dirs
+st.set_page_config(page_title="🫀 ECG Stroke Prediction", page_icon="💓", layout="centered")
 
-folders = auto_detect_model_folder()
+# --------------------------
+# CONFIG SECTION
+# --------------------------
+MODEL_FNAME = "meta_logreg.joblib"
+SCALER_FNAME = "scaler.joblib"
+IMPUTER_FNAME = "imputer.joblib"
+DRIVE_FEATURES_PATH = "/content/drive/MyDrive/data/ecg_all_outputs/features_selected.npy"
+# --------------------------
 
-MODEL_PATH = "meta_logreg.joblib"
-SCALER_PATH = "scaler.joblib"
-IMPUTER_PATH = "imputer.joblib"
+st.title("🩺 ECG Stroke Prediction (with Drive Integration)")
+st.caption("Loads model and feature index automatically, supports Drive-based feature selection.")
 
-# لو فيه مجلدات موديل في المشروع
-if folders:
-    st.info(f"📁 Found possible model folders: {len(folders)}")
-    selected_dir = st.selectbox("Select model folder", folders)
+# --- Try to load model files
+def load_model_artifacts():
+    model = scaler = imputer = None
     try:
-        for name in ["meta_logreg.joblib", "scaler.joblib", "imputer.joblib"]:
-            src = os.path.join(selected_dir, name)
-            if os.path.exists(src):
-                dst = os.path.basename(src)
-                if not os.path.exists(dst):
-                    joblib.dump(joblib.load(src), dst)
-        st.success("✅ Model files auto-loaded from selected folder!")
+        model = joblib.load(MODEL_FNAME)
+        scaler = joblib.load(SCALER_FNAME)
+        imputer = joblib.load(IMPUTER_FNAME)
+        st.success("✅ Model, Scaler, Imputer loaded from repo.")
     except Exception as e:
-        st.warning(f"⚠️ Could not load automatically: {e}")
-else:
-    st.warning("⚠️ No model folder found automatically. Please upload manually below.")
-
-# تحميل يدوي (في حالة فشل الاكتشاف التلقائي)
-meta = st.file_uploader("Upload meta_logreg.joblib", type=["joblib"], key="meta")
-scale = st.file_uploader("Upload scaler.joblib", type=["joblib"], key="scale")
-imp = st.file_uploader("Upload imputer.joblib", type=["joblib"], key="imp")
-
-if meta and scale and imp:
-    with open(MODEL_PATH, "wb") as f: f.write(meta.read())
-    with open(SCALER_PATH, "wb") as f: f.write(scale.read())
-    with open(IMPUTER_PATH, "wb") as f: f.write(imp.read())
-    st.success("✅ Model files uploaded successfully!")
-
-# 🔹 تحميل الموديلات
-def load_artifacts():
-    model = joblib.load(MODEL_PATH)
-    scaler = joblib.load(SCALER_PATH)
-    imputer = joblib.load(IMPUTER_PATH)
+        st.warning(f"⚠️ Could not load some model artifacts: {e}")
     return model, scaler, imputer
 
-try:
-    model, scaler, imputer = load_artifacts()
-    st.success("✅ Model loaded successfully!")
-except Exception as e:
-    st.stop()
-    st.error(f"❌ Failed to load model: {e}")
+# --- Try to load feature indices (from Drive or local)
+def load_features_selected():
+    if os.path.exists("features_selected.npy"):
+        path = "features_selected.npy"
+    elif os.path.exists(DRIVE_FEATURES_PATH):
+        path = DRIVE_FEATURES_PATH
+    else:
+        st.warning("⚠️ features_selected.npy not found locally or in Drive.")
+        return None
+    try:
+        idx = np.load(path)
+        st.success(f"✅ Loaded feature-selection index ({len(idx)} features) from {path}")
+        return idx
+    except Exception as e:
+        st.error(f"❌ Failed to load features_selected.npy: {e}")
+        return None
 
-# 🔹 دالة استخراج micro-dynamics features
+model, scaler, imputer = load_model_artifacts()
+selected_idx = load_features_selected()
+
+if model is None or scaler is None or imputer is None:
+    st.stop()
+
+# --- Micro-dynamics extractor
 def extract_micro_features(signal):
-    return [
+    return np.array([
         np.mean(signal), np.std(signal), np.min(signal), np.max(signal),
         np.ptp(signal), np.sqrt(np.mean(signal**2)), np.median(signal),
         np.percentile(signal,25), np.percentile(signal,75),
         skew(signal), kurtosis(signal)
-    ]
+    ])
 
-# 🔹 دالة لتعديل عدد الأعمدة
-def align_features_to_imputer(X, imputer):
-    expected = len(imputer.statistics_)
+# --- Alignment helpers
+def align(X, expected):
     if X.shape[1] < expected:
-        X = np.hstack([X, np.zeros((1, expected - X.shape[1]))])
-        st.warning(f"⚠️ Added {expected - X.shape[1]} placeholder features.")
+        diff = expected - X.shape[1]
+        X = np.hstack([X, np.zeros((X.shape[0], diff))])
+        st.warning(f"⚠️ Added {diff} placeholder features.")
     elif X.shape[1] > expected:
         X = X[:, :expected]
-        st.warning(f"⚠️ Trimmed {X.shape[1] - expected} extra features.")
+        st.warning(f"⚠️ Trimmed {X.shape[1]-expected} features.")
     return X
 
-# ===========================================================
-# 🧠 الواجهة الرئيسية
-# ===========================================================
+# --- Apply feature selection
+def apply_selection(X):
+    if selected_idx is not None and len(selected_idx) <= X.shape[1]:
+        X = X[:, selected_idx]
+        st.info(f"✅ Applied feature selection ({len(selected_idx)} features).")
+    return X
 
+# --- Main UI
 st.markdown("---")
-data_type = st.radio("Select input type", ["Raw ECG (.hea / .dat)", "Feature File (CSV / NPY)"])
+uploaded = st.file_uploader("Upload ECG features file (CSV / NPY)", type=["csv","npy"])
 
-# ===========================================================
-# 🌡️ تحليل ملفات ECG الخام
-# ===========================================================
-if data_type == "Raw ECG (.hea / .dat)":
-    hea_file = st.file_uploader("Upload .hea file", type=["hea"])
-    dat_file = st.file_uploader("Upload .dat file", type=["dat"])
+if uploaded:
+    try:
+        if uploaded.name.endswith(".csv"):
+            df = pd.read_csv(uploaded)
+            X = df.values
+        else:
+            X = np.load(uploaded)
+        
+        X = apply_selection(X)
+        X = align(X, len(imputer.statistics_))
+        X = imputer.transform(X)
+        X = align(X, len(scaler.mean_))
+        X = scaler.transform(X)
 
-    if hea_file and dat_file:
-        with open(hea_file.name, "wb") as f: f.write(hea_file.read())
-        with open(dat_file.name, "wb") as f: f.write(dat_file.read())
+        probs = model.predict_proba(X)[:,1]
+        preds = np.where(probs>=0.5, "⚠️ Stroke Risk", "✅ Normal")
 
-        try:
-            rec = rdrecord(hea_file.name.replace(".hea", ""))
-            signal = rec.p_signal[:, 0]
+        df_out = pd.DataFrame({"Sample": np.arange(len(probs)),
+                               "Probability": probs,
+                               "Prediction": preds})
+        st.dataframe(df_out.head(10))
+        st.line_chart(probs)
 
-            st.subheader("📊 ECG Signal Preview")
-            st.line_chart(signal[:2000], height=200, use_container_width=True)
-
-            # 🧮 استخراج المميزات
-            feats = np.array(extract_micro_features(signal)).reshape(1, -1)
-            feats = align_features_to_imputer(feats, imputer)
-
-            # 🔁 التنبؤ
-            X_imp = imputer.transform(feats)
-            X_scaled = scaler.transform(X_imp)
-            prob = model.predict_proba(X_scaled)[0, 1]
-            pred = "⚠️ High Stroke Risk" if prob >= 0.5 else "✅ Normal ECG"
-
-            st.subheader("🔍 Prediction Result")
-            st.metric("Result", pred, delta=f"{prob*100:.2f}% Probability")
-
-            # 📈 رسم بياني
-            fig, ax = plt.subplots()
-            ax.bar(["Normal", "Stroke Risk"], [1-prob, prob], color=["#6cc070", "#ff6b6b"])
-            ax.set_ylabel("Probability")
-            ax.set_title("Stroke Risk Probability")
-            st.pyplot(fig)
-
-            # 🧾 عرض المميزات
-            cols = ["mean","std","min","max","ptp","rms","median","p25","p75","skew","kurtosis"]
-            df_feats = pd.DataFrame([extract_micro_features(signal)], columns=cols)
-            df_feats["Stroke Probability"] = prob
-            df_feats["Prediction"] = pred
-            st.markdown("### 📈 Extracted Micro-Dynamics Features")
-            st.dataframe(df_feats.style.format(precision=5))
-
-            # 💾 حفظ النتائج
-            csv_buf = BytesIO()
-            df_feats.to_csv(csv_buf, index=False)
-            st.download_button(
-                "⬇️ Download Results as CSV",
-                data=csv_buf.getvalue(),
-                file_name="ecg_prediction_results.csv",
-                mime="text/csv"
-            )
-
-        except Exception as e:
-            st.error(f"❌ Error processing ECG: {e}")
-
-# ===========================================================
-# 🧾 تحليل ملفات Features (CSV/NPY)
-# ===========================================================
-else:
-    uploaded = st.file_uploader("Upload feature file", type=["csv","npy"])
-    if uploaded:
-        try:
-            X = pd.read_csv(uploaded).values if uploaded.name.endswith(".csv") else np.load(uploaded)
-            X = align_features_to_imputer(X, imputer)
-            X_imp = imputer.transform(X)
-            X_scaled = scaler.transform(X_imp)
-            probs = model.predict_proba(X_scaled)[:, 1]
-            preds = np.where(probs >= 0.5, "⚠️ High Risk", "✅ Normal")
-
-            df_out = pd.DataFrame({
-                "Sample": np.arange(1, len(probs)+1),
-                "Probability": probs,
-                "Prediction": preds
-            })
-
-            st.subheader("🔍 Batch Prediction Summary")
-            st.dataframe(df_out.head(10))
-            st.line_chart(probs, height=150)
-
-            csv_buf = BytesIO()
-            df_out.to_csv(csv_buf, index=False)
-            st.download_button(
-                "⬇️ Download All Predictions (CSV)",
-                data=csv_buf.getvalue(),
-                file_name="ecg_batch_predictions.csv",
-                mime="text/csv"
-            )
-
-        except Exception as e:
-            st.error(f"❌ Error: {e}")
+        csv_buf = BytesIO()
+        df_out.to_csv(csv_buf, index=False)
+        st.download_button("⬇️ Download Predictions CSV", csv_buf.getvalue(),
+                           file_name="ecg_predictions.csv", mime="text/csv")
+    except Exception as e:
+        st.error(f"❌ Error: {e}")
