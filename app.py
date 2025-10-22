@@ -1,3 +1,8 @@
+# ============================================
+# ECG Stroke Prediction App (Final v3 — Polished)
+# ============================================
+# This comment prevents Streamlit from displaying the first few lines as text
+
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -28,13 +33,19 @@ up_scaler = st.file_uploader("scaler.joblib", type=["joblib", "pkl"])
 up_imputer = st.file_uploader("imputer.joblib", type=["joblib", "pkl"])
 up_feats = st.file_uploader("features_selected.npy (optional)", type=["npy"])
 
-if st.button("Save uploaded files"):
-    if up_model: open(MODEL_PATH, "wb").write(up_model.read())
-    if up_scaler: open(SCALER_PATH, "wb").write(up_scaler.read())
-    if up_imputer: open(IMPUTER_PATH, "wb").write(up_imputer.read())
-    if up_feats: open(FEATURES_PATH, "wb").write(up_feats.read())
-    st.success("✅ Uploaded files saved. Click 'Rerun' to load them.")
+if st.button("💾 Save uploaded files"):
+    try:
+        if up_model: open(MODEL_PATH, "wb").write(up_model.read())
+        if up_scaler: open(SCALER_PATH, "wb").write(up_scaler.read())
+        if up_imputer: open(IMPUTER_PATH, "wb").write(up_imputer.read())
+        if up_feats: open(FEATURES_PATH, "wb").write(up_feats.read())
+        st.success("✅ Uploaded files saved. Click 'Rerun' to load them.")
+    except Exception as e:
+        st.error(f"❌ Error saving files: {e}")
 
+# =============================
+# تحميل الـ Artifacts
+# =============================
 def load_artifacts():
     model = joblib.load(MODEL_PATH)
     scaler = joblib.load(SCALER_PATH)
@@ -50,11 +61,11 @@ def load_artifacts():
 try:
     model, scaler, imputer, selected_idx = load_artifacts()
 except Exception as e:
-    st.stop()
     st.error(f"❌ Failed to load model: {e}")
+    st.stop()
 
 # =============================
-# استخراج المميزات
+# استخراج المميزات (micro-dynamics)
 # =============================
 def extract_micro_features(sig):
     sig = np.asarray(sig, dtype=float)
@@ -96,7 +107,7 @@ def apply_feature_selection(X, selected_idx):
     return X
 
 # =============================
-# الواجهة الرئيسية
+# واجهة المستخدم الرئيسية
 # =============================
 st.markdown("---")
 mode = st.radio("Select input type:", ["Raw ECG (.hea + .dat)", "Feature file (CSV / NPY)"])
@@ -111,8 +122,8 @@ if mode == "Raw ECG (.hea + .dat)":
 
     if hea_file and dat_file:
         tmp = hea_file.name.replace(".hea", "")
-        open(hea_file.name, "wb").write(hea_file.read())
-        open(dat_file.name, "wb").write(dat_file.read())
+        with open(hea_file.name, "wb") as f: f.write(hea_file.read())
+        with open(dat_file.name, "wb") as f: f.write(dat_file.read())
 
         try:
             rec = rdrecord(tmp)
@@ -134,8 +145,7 @@ if mode == "Raw ECG (.hea + .dat)":
             st.metric("Result", label, delta=f"{prob*100:.2f}%")
 
             fig, ax = plt.subplots()
-            ax.bar(["Normal", "Stroke Risk"], [1-prob, prob],
-                   color=["#6cc070", "#ff6b6b"])
+            ax.bar(["Normal", "Stroke Risk"], [1-prob, prob], color=["#6cc070", "#ff6b6b"])
             ax.set_ylabel("Probability")
             st.pyplot(fig)
 
@@ -182,7 +192,7 @@ else:
 st.markdown("---")
 st.markdown("""
 ✅ **Final Notes**
-- This version applies the same `features_selected.npy` used in model training.
-- No more mismatches between Imputer, Scaler, and Model.
+- Applies the same `features_selected.npy` used in model training.
+- Handles mismatched feature counts automatically.
 - For research use only — not a clinical diagnosis tool.
 """)
