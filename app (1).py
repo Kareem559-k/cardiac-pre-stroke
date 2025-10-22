@@ -5,6 +5,7 @@ import joblib, os
 from scipy.stats import skew, kurtosis
 from wfdb import rdrecord
 import matplotlib.pyplot as plt
+from io import BytesIO
 
 st.set_page_config(page_title="🫀 ECG Stroke Predictor (Micro-Dynamics)", page_icon="💙", layout="centered")
 
@@ -21,9 +22,9 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🩺 ECG Stroke Prediction (Micro-Dynamics Enabled)")
-st.caption("Upload raw ECG signals (.hea / .dat) or precomputed features (CSV / NPY). The app automatically extracts micro-dynamics features and predicts stroke risk.")
+st.caption("Upload raw ECG signals (.hea / .dat) or precomputed features (CSV / NPY). The app extracts micro-dynamics features automatically and predicts stroke risk.")
 
-# === المسارات
+# === مسارات الملفات
 MODEL_PATH = "meta_logreg.joblib"
 SCALER_PATH = "scaler.joblib"
 IMPUTER_PATH = "imputer.joblib"
@@ -37,7 +38,7 @@ def load_artifacts():
 
 model = scaler = imputer = None
 
-# === التحقق من وجود الموديل
+# === التحقق من وجود الملفات
 if not (os.path.exists(MODEL_PATH) and os.path.exists(SCALER_PATH) and os.path.exists(IMPUTER_PATH)):
     st.info("⚙️ Please upload model files (.joblib) first.")
     meta = st.file_uploader("Upload meta_logreg.joblib", type=["joblib"], key="meta")
@@ -69,7 +70,7 @@ def extract_micro_features(signal):
         "kurtosis": kurtosis(signal)
     }
 
-# === الواجهة الرئيسية بعد تحميل الموديل ===
+# === الواجهة الرئيسية ===
 if model is not None:
     st.success("✅ Model loaded successfully! Ready for prediction.")
     st.markdown("---")
@@ -96,12 +97,16 @@ if model is not None:
                 feats_dict = extract_micro_features(signal)
                 feats = np.array(list(feats_dict.values())).reshape(1, -1)
 
-                # 🔧 تعديل الأبعاد لو ناقص
-                expected_features = imputer.statistics_.shape[0]
+                # ⚙️ ضبط الأبعاد تلقائيًا بناءً على عدد الخصائص اللي الموديل متوقعها
+                expected_features = getattr(scaler, "mean_", np.zeros((1,))).shape[0]
                 if feats.shape[1] < expected_features:
                     missing = expected_features - feats.shape[1]
                     feats = np.hstack([feats, np.zeros((1, missing))])
                     st.warning(f"⚠️ Added {missing} placeholder features (auto-aligned).")
+                elif feats.shape[1] > expected_features:
+                    extra = feats.shape[1] - expected_features
+                    feats = feats[:, :expected_features]
+                    st.warning(f"⚠️ Trimmed {extra} extra features (auto-aligned).")
 
                 # ✅ التنبؤ
                 X_imp = imputer.transform(feats)
@@ -123,6 +128,19 @@ if model is not None:
                 st.markdown("### 📈 Extracted Micro-Dynamics Features")
                 df_feats = pd.DataFrame(feats_dict.items(), columns=["Feature", "Value"])
                 st.dataframe(df_feats.style.format({"Value": "{:.5f}"}))
+
+                # 💾 تجهيز ملف CSV للتحميل
+                df_out = df_feats.copy()
+                df_out["Stroke Probability"] = prob
+                df_out["Prediction"] = pred
+                csv_buffer = BytesIO()
+                df_out.to_csv(csv_buffer, index=False)
+                st.download_button(
+                    label="⬇️ Download Results as CSV",
+                    data=csv_buffer.getvalue(),
+                    file_name="ecg_prediction_results.csv",
+                    mime="text/csv"
+                )
 
             except Exception as e:
                 st.error(f"❌ Error processing ECG: {e}")
@@ -147,5 +165,21 @@ if model is not None:
                 st.metric("Overall", pred, delta=f"{avg_prob*100:.1f}% Probability")
 
                 st.line_chart(probs, height=150)
+
+                # 💾 حفظ النتائج في CSV
+                df_out = pd.DataFrame({
+                    "Sample": np.arange(1, len(probs)+1),
+                    "Probability": probs,
+                    "Prediction": np.where(probs >= 0.5, "Stroke Risk", "Normal")
+                })
+                csv_buffer = BytesIO()
+                df_out.to_csv(csv_buffer, index=False)
+                st.download_button(
+                    label="⬇️ Download Results as CSV",
+                    data=csv_buffer.getvalue(),
+                    file_name="ecg_batch_predictions.csv",
+                    mime="text/csv"
+                )
+
             except Exception as e:
                 st.error(f"❌ Error during prediction: {e}")
