@@ -1,33 +1,30 @@
-# app.py (Merged Premium Visual Edition)
 import streamlit as st
 import numpy as np
 import pandas as pd
-import joblib, os, glob, time
+import joblib, os, glob
 from scipy.stats import skew, kurtosis
 from io import BytesIO
-import matplotlib.pyplot as plt
-from matplotlib import cm
 
-# try import wfdb for raw .hea/.dat
+# Try importing wfdb for raw ECG support
 try:
     from wfdb import rdrecord
     WFDB_OK = True
 except Exception:
     WFDB_OK = False
 
-# ===== page config =====
-st.set_page_config(page_title="ECG Stroke Predictor — Premium", page_icon="🫀", layout="wide")
-st.title("💎 ECG Stroke Predictor — Premium Visual Edition")
-st.caption("Micro-dynamics features → pipeline (imputer→scaler→model). Upload .hea/.dat or CSV/NPY feature files.")
+# ====== PAGE SETUP ======
+st.set_page_config(page_title="ECG Stroke Predictor", page_icon="🫀", layout="centered")
+st.title("🩺 ECG Stroke Predictor — Micro-Dynamics")
+st.caption("Upload raw ECG (.hea/.dat) or feature files (CSV/NPY). The app automatically aligns features and predicts stroke risk.")
 
 st.markdown("""
-This app extracts **micro-dynamics** (mean, std, RMS, skewness, kurtosis, etc.), aligns features through the
-preprocessing pipeline, and predicts stroke-risk probability.  
-**Visual edition** includes animated ECG preview (pause/resume), radar chart of features, probability gauge,
-histogram & trend charts for batch inputs, and explanatory text (not only graphs).
+This app uses **micro-dynamics features** (mean, std, RMS, skewness, kurtosis, etc.)
+to extract meaningful signal properties, then passes them through a trained model pipeline
+(imputer → scaler → classifier).  
+You can adjust the **decision threshold** and get clear text explanations for each prediction.
 """)
 
-# ===== model files & detection/upload =====
+# ====== AUTO-DETECT MODEL FILES ======
 MODEL_PATH = "meta_logreg.joblib"
 SCALER_PATH = "scaler.joblib"
 IMPUTER_PATH = "imputer.joblib"
@@ -38,8 +35,8 @@ def find_pipeline_dirs():
 
 folders = find_pipeline_dirs()
 if folders:
-    st.info(f"Found {len(folders)} candidate model folders.")
-    chosen = st.selectbox("Select a pipeline folder (optional):", ["(none)"] + folders)
+    st.info(f"Found {len(folders)} possible model folders.")
+    chosen = st.selectbox("Select a model folder (optional):", ["(none)"] + folders)
     if chosen != "(none)":
         try:
             for fname in ["meta_logreg.joblib", "scaler.joblib", "imputer.joblib"]:
@@ -48,15 +45,16 @@ if folders:
                     joblib.dump(joblib.load(src), fname)
             st.success("✅ Model files copied from selected folder.")
         except Exception as e:
-            st.warning(f"Could not copy files from folder: {e}")
+            st.warning(f"⚠️ Could not copy files: {e}")
 
+# ====== UPLOAD MODEL FILES MANUALLY ======
 col1, col2, col3 = st.columns(3)
 with col1:
-    up_model = st.file_uploader("Upload meta_logreg.joblib", type=["joblib","pkl"], key="m")
+    up_model = st.file_uploader("meta_logreg.joblib", type=["joblib", "pkl"])
 with col2:
-    up_scaler = st.file_uploader("Upload scaler.joblib", type=["joblib","pkl"], key="s")
+    up_scaler = st.file_uploader("scaler.joblib", type=["joblib", "pkl"])
 with col3:
-    up_imputer = st.file_uploader("Upload imputer.joblib", type=["joblib","pkl"], key="i")
+    up_imputer = st.file_uploader("imputer.joblib", type=["joblib", "pkl"])
 
 if st.button("Save uploaded model files"):
     saved = False
@@ -68,16 +66,16 @@ if st.button("Save uploaded model files"):
         if up_imputer:
             with open(IMPUTER_PATH, "wb") as f: f.write(up_imputer.read()); saved = True
         if saved:
-            st.success("✅ Uploaded model files saved.")
+            st.success("✅ Uploaded model files saved successfully.")
         else:
             st.info("No files uploaded.")
     except Exception as e:
         st.error(f"Failed to save uploaded files: {e}")
 
-# ===== load artifacts =====
+# ====== LOAD MODEL AND PREPROCESSORS ======
 def load_artifacts():
     if not (os.path.exists(MODEL_PATH) and os.path.exists(SCALER_PATH) and os.path.exists(IMPUTER_PATH)):
-        raise FileNotFoundError("Missing model/scaler/imputer files — upload or place them in repo root.")
+        raise FileNotFoundError("Model, scaler, or imputer files missing.")
     model = joblib.load(MODEL_PATH)
     scaler = joblib.load(SCALER_PATH)
     imputer = joblib.load(IMPUTER_PATH)
@@ -85,12 +83,12 @@ def load_artifacts():
 
 try:
     model, scaler, imputer = load_artifacts()
-    st.success("✅ Model and preprocessors loaded.")
+    st.success("✅ Model and preprocessing objects loaded.")
 except Exception as e:
     st.stop()
-    st.error(f"❌ Could not load model artifacts: {e}")
+    st.error(f"❌ Could not load model: {e}")
 
-# ===== utilities: micro-features + align =====
+# ====== FEATURE EXTRACTION ======
 def extract_micro_features(sig):
     s = np.asarray(sig, dtype=float)
     return np.array([
@@ -107,216 +105,112 @@ def extract_micro_features(sig):
         kurtosis(s)
     ])
 
-def align_to_expected(X, expected, stage_name):
-    if X is None: return X
-    if np.ndim(X) == 1:
-        X = X.reshape(1, -1)
-    if expected is None:
-        return X
+def align_to_expected(X, expected, stage):
+    if X.ndim == 1: X = X.reshape(1, -1)
+    if expected is None: return X
     if X.shape[1] < expected:
         add = expected - X.shape[1]
         X = np.hstack([X, np.zeros((X.shape[0], add))])
-        st.info(f"Added {add} placeholder features for {stage_name}.")
+        st.info(f"Added {add} placeholder features for {stage}.")
     elif X.shape[1] > expected:
         cut = X.shape[1] - expected
         X = X[:, :expected]
-        st.info(f"Trimmed {cut} extra features for {stage_name}.")
+        st.info(f"Trimmed {cut} extra features for {stage}.")
     return X
 
 def exp_imputer(): return getattr(imputer, "statistics_", None).shape[0] if hasattr(imputer, "statistics_") else None
 def exp_scaler(): return getattr(scaler, "mean_", None).shape[0] if hasattr(scaler, "mean_") else None
 def exp_model(): return getattr(model, "n_features_in_", None)
 
-# ===== main UI controls =====
+# ====== MAIN UI ======
 st.markdown("---")
 mode = st.radio("Choose input type:", ["Raw ECG (.hea + .dat)", "Feature file (CSV / NPY)"])
 threshold = st.slider("Decision threshold (probability ≥ this → High Risk)", 0.05, 0.95, 0.5, 0.01)
 
-def explain_text(prob):
+def explain(prob):
     if prob >= threshold:
-        return (f"🔴 High stroke risk (probability = {prob:.2%})\n\n"
-                "Model found patterns similar to positive cases. Recommendation: clinical review.")
+        return (f"🔴 **High stroke risk (probability = {prob:.2%})**\n\n"
+                "The model detected patterns similar to high-risk ECGs.\n"
+                "Recommendation: further clinical review is advised.")
     else:
-        return (f"🟢 Normal (probability = {prob:.2%})\n\n"
-                "Features fall within normal range. If symptoms exist, consult a clinician.")
+        return (f"🟢 **Normal (probability = {prob:.2%})**\n\n"
+                "Signal features fall within normal patterns learned by the model.\n"
+                "If symptoms exist, consult a doctor regardless of this prediction.")
 
-# ===== Visual helpers =====
-def radar_plot(values, labels, title="Micro-Dynamics Radar"):
-    angles = np.linspace(0, 2*np.pi, len(labels), endpoint=False).tolist()
-    vals = np.concatenate([values, values[:1]])
-    angles_full = np.concatenate([angles, [angles[0]]])
-    fig = plt.figure(figsize=(4,4))
-    ax = fig.add_subplot(111, polar=True)
-    ax.plot(angles_full, vals, linewidth=2, color="#8A2BE2")
-    ax.fill(angles_full, vals, color="#8A2BE2", alpha=0.25)
-    ax.set_xticks(angles)
-    ax.set_xticklabels(labels, fontsize=8)
-    ax.set_title(title, size=11)
-    return fig
-
-def circular_gauge(prob):
-    fig, ax = plt.subplots(figsize=(2.2,2.2))
-    ax.axis('equal')
-    # background circle
-    ax.pie([prob, 1-prob], startangle=90, colors=["#E74C3C","#EDEDED"], wedgeprops=dict(width=0.35))
-    ax.text(0,0, f"{prob*100:.1f}%", ha='center', va='center', fontsize=12, fontweight='bold')
-    return fig
-
-# ===== raw ECG mode =====
+# ====== RAW ECG MODE ======
 if mode == "Raw ECG (.hea + .dat)":
     if not WFDB_OK:
-        st.warning("wfdb not installed — raw .hea/.dat support disabled. Use feature file mode instead.")
+        st.warning("⚠️ wfdb not available — upload feature file instead.")
     hea = st.file_uploader("Upload .hea file", type=["hea"])
     dat = st.file_uploader("Upload .dat file", type=["dat"])
     if hea and dat and WFDB_OK:
-        base = hea.name.replace(".hea","")
+        tmp = hea.name.replace(".hea", "")
         with open(hea.name, "wb") as f: f.write(hea.read())
         with open(dat.name, "wb") as f: f.write(dat.read())
         try:
-            rec = rdrecord(base)
-            signal = rec.p_signal[:,0] if rec.p_signal.ndim > 1 else rec.p_signal
+            rec = rdrecord(tmp)
+            sig = rec.p_signal[:, 0] if rec.p_signal.ndim > 1 else rec.p_signal
+            st.line_chart(sig[:2000], height=200)
+            st.caption("Preview of first 2000 samples.")
 
-            # layout: left = visuals, right = text + controls
-            left, right = st.columns([2,1])
+            feats = extract_micro_features(sig).reshape(1, -1)
+            feats = align_to_expected(feats, exp_imputer(), "Imputer")
+            X_imp = imputer.transform(feats)
+            X_imp = align_to_expected(X_imp, exp_scaler(), "Scaler")
+            X_scaled = scaler.transform(X_imp)
+            X_scaled = align_to_expected(X_scaled, exp_model(), "Model")
 
-            # ANIMATED ECG with Pause/Resume: use checkbox
-            with left:
-                st.subheader("ECG Wave (animated)")
-                animate = st.checkbox("Animate ECG (Pause/Resume)", value=False)
-                win = st.slider("Animation window length (samples)", 200, 2000, 500, step=100)
-                step = st.slider("Animation step per frame", 10, 200, 50)
-                chart_placeholder = st.empty()
-                idx = 0
-                # simple animation loop controlled by checkbox; do not block UI too long
-                if animate:
-                    # animate for up to a few seconds but allow GUI to remain responsive
-                    for _ in range(2000):  # a large loop, user can uncheck to stop
-                        slice_ = signal[idx: idx + win]
-                        chart_placeholder.line_chart(slice_)
-                        idx = (idx + step) % max(1, len(signal)-win)
-                        time.sleep(0.07)
-                        if not st.session_state.get("run_anim", True):
-                            break
-                        # check checkbox state each loop; if unchecked, break
-                        if not st.checkbox("Animate ECG (Pause/Resume)", value=True, key="anim_check"):
-                            break
-                    # final static plot when animation stops
-                    chart_placeholder.line_chart(signal[:win])
-                else:
-                    chart_placeholder.line_chart(signal[:min(2000,len(signal))])
-                    st.caption("ECG preview (first samples)")
+            prob = model.predict_proba(X_scaled)[0, 1] if hasattr(model, "predict_proba") else float(model.predict(X_scaled)[0])
+            st.markdown("### Prediction")
+            st.write(explain(prob))
 
-                # Show FFT and histogram small plots
-                fig_h, axs = plt.subplots(1,2, figsize=(8,2.5))
-                axs[0].hist(signal, bins=50, color="#5DADE2", alpha=0.7)
-                axs[0].set_title("Amplitude distribution")
-                fft_vals = np.abs(np.fft.rfft(signal))
-                axs[1].plot(fft_vals[:500], color="#AF7AC5")
-                axs[1].set_title("FFT (magnitude)")
-                st.pyplot(fig_h)
+            cols = ["mean","std","min","max","ptp","rms","median","p25","p75","skew","kurtosis"]
+            df = pd.DataFrame([extract_micro_features(sig)], columns=cols)
+            df["probability"] = prob
+            st.dataframe(df.T.rename(columns={0:"value"}))
 
-            with right:
-                st.subheader("Prediction & Features")
-                # extract features -> align -> pipeline
-                feats = extract_micro_features(signal).reshape(1,-1)
-                feats = align_to_expected(feats, exp_imputer(), "Imputer")
-                X_imp = imputer.transform(feats)
-                X_imp = align_to_expected(X_imp, exp_scaler(), "Scaler")
-                X_scaled = scaler.transform(X_imp)
-                X_scaled = align_to_expected(X_scaled, exp_model(), "Model")
+            from matplotlib import pyplot as plt
+            fig, ax = plt.subplots(figsize=(4,1.4))
+            ax.barh([0], [prob], color="#ff6b6b" if prob>=threshold else "#6cc070")
+            ax.set_xlim(0,1)
+            ax.set_yticks([]); ax.set_xlabel("Probability")
+            st.pyplot(fig)
 
-                # predict
-                prob = float(model.predict_proba(X_scaled)[0,1]) if hasattr(model, "predict_proba") else float(model.predict(X_scaled)[0])
-                st.markdown("### Result")
-                st.write(explain_text(prob))
-
-                # gauge + bar
-                g1, g2 = st.columns([1,1])
-                with g1:
-                    st.pyplot(circular_gauge(prob))
-                with g2:
-                    fig_bar, ax_bar = plt.subplots(figsize=(3.2,1.6))
-                    ax_bar.bar(["Normal","Stroke Risk"], [1-prob, prob], color=["#6CC070","#E74C3C"])
-                    ax_bar.set_ylim(0,1)
-                    ax_bar.set_ylabel("Probability")
-                    st.pyplot(fig_bar)
-
-                # radar
-                labels = ["mean","std","min","max","ptp","rms","median","p25","p75","skew","kurtosis"]
-                values = extract_micro_features(signal)
-                st.pyplot(radar_plot(values, labels, title="Micro-dynamics radar"))
-
-                # features table
-                df_feats = pd.DataFrame([values], columns=labels)
-                df_feats["probability"] = prob
-                st.markdown("#### Extracted micro-dynamics")
-                st.dataframe(df_feats.T.rename(columns={0:"value"}))
-
-                # download CSV
-                buf = BytesIO()
-                df_feats.to_csv(buf, index=False)
-                st.download_button("Download single-result CSV", buf.getvalue(), file_name="ecg_single_result.csv", mime="text/csv")
+            buf = BytesIO(); df.to_csv(buf, index=False)
+            st.download_button("Download result CSV", buf.getvalue(), file_name="ecg_result.csv", mime="text/csv")
 
         except Exception as e:
-            st.error(f"Error processing ECG: {e}")
+            st.error(f"❌ Error processing ECG: {e}")
 
-# ===== feature/batch mode =====
+# ====== FEATURE FILE MODE ======
 else:
-    uploaded = st.file_uploader("Upload features file (CSV or NPY)", type=["csv","npy"])
+    uploaded = st.file_uploader("Upload features file", type=["csv","npy"])
     if uploaded:
         try:
-            X = pd.read_csv(uploaded).values if uploaded.name.lower().endswith(".csv") else np.load(uploaded)
+            X = pd.read_csv(uploaded).values if uploaded.name.endswith(".csv") else np.load(uploaded)
             X = align_to_expected(X, exp_imputer(), "Imputer")
             X_imp = imputer.transform(X)
             X_imp = align_to_expected(X_imp, exp_scaler(), "Scaler")
             X_scaled = scaler.transform(X_imp)
             X_scaled = align_to_expected(X_scaled, exp_model(), "Model")
 
-            if hasattr(model, "predict_proba"):
-                probs = model.predict_proba(X_scaled)[:,1]
-            else:
-                preds = model.predict(X_scaled)
-                probs = np.array([1.0 if p==1 else 0.0 for p in preds])
+            probs = model.predict_proba(X_scaled)[:,1] if hasattr(model, "predict_proba") else np.array(model.predict(X_scaled))
+            preds = np.where(probs >= threshold, "High Risk", "Normal")
 
-            preds_text = np.where(probs >= threshold, "High Risk", "Normal")
-            df_out = pd.DataFrame({"sample": np.arange(1, len(probs)+1), "probability": probs, "prediction": preds_text})
+            df = pd.DataFrame({"sample": np.arange(1, len(probs)+1), "probability": probs, "prediction": preds})
+            st.dataframe(df.head(20).style.format({"probability": "{:.4f}"}))
+            st.caption("Preview of first 20 predictions.")
 
-            st.markdown("### Batch results (first 50 rows)")
-            st.dataframe(df_out.head(50).style.format({"probability":"{:.4f}"}))
-
-            # visuals: histogram + trend line + top probabilities bar
-            c1, c2 = st.columns([1,1])
-            with c1:
-                fig_hist, ax_hist = plt.subplots(figsize=(6,3))
-                ax_hist.hist(probs, bins=30, color="#5DADE2", edgecolor="k", alpha=0.7)
-                ax_hist.set_title("Probability distribution (Histogram)")
-                st.pyplot(fig_hist)
-
-            with c2:
-                fig_line, ax_line = plt.subplots(figsize=(6,3))
-                ax_line.plot(probs, color="#AF7AC5", linewidth=1.2)
-                ax_line.set_title("Probability trend (by sample index)")
-                st.pyplot(fig_line)
-
-            # top N risky samples
-            topN = st.number_input("Show top N risky samples", min_value=1, max_value=min(50, len(probs)), value=min(10,len(probs)))
-            top_idx = np.argsort(-probs)[:topN]
-            st.markdown(f"### Top {topN} highest-probability samples")
-            st.table(df_out.iloc[top_idx].reset_index(drop=True).style.format({"probability":"{:.4f}"}))
-
-            # download
-            buf = BytesIO()
-            df_out.to_csv(buf, index=False)
-            st.download_button("Download batch CSV", buf.getvalue(), file_name="ecg_batch_results.csv", mime="text/csv")
+            buf = BytesIO(); df.to_csv(buf, index=False)
+            st.download_button("Download all results (CSV)", buf.getvalue(), file_name="batch_predictions.csv", mime="text/csv")
 
         except Exception as e:
-            st.error(f"Error processing file: {e}")
+            st.error(f"❌ Error processing file: {e}")
 
-# ===== footer notes =====
 st.markdown("---")
 st.markdown("""
-**Notes & tips**
-- Lower the threshold to increase sensitivity (may increase false positives).
-- The animated ECG is a visualization tool — results should be verified clinically.
-- Ensure the model/scaler/imputer match the ones used during model training for consistent results.
+### Notes
+- Lower the threshold to make the model more sensitive (detects more positives).
+- Results are **not medical advice** — always verify with clinical evaluation.
+- To get consistent predictions, ensure you use the same preprocessing pipeline used during training.
 """)
