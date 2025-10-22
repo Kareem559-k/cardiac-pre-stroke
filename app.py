@@ -1,10 +1,6 @@
-"""
-🫀 ECG Stroke Prediction App (Final v4)
-- Supports raw ECG and feature files
-- Automatically fixes feature mismatches between model, scaler, imputer
-- Optional feature selection (features_selected.npy)
-"""
-
+# ==========================================================
+# ECG Stroke Prediction App — Final Silent Version (v4)
+# ==========================================================
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -19,7 +15,7 @@ from io import BytesIO
 # =============================
 st.set_page_config(page_title="ECG Stroke Predictor", page_icon="💙", layout="centered")
 st.title("🫀 ECG Stroke Prediction (Final v4)")
-st.caption("Uploads ECG or feature files, auto-aligns dimensions, and predicts stroke risk safely.")
+st.caption("Upload model + ECG or feature file to predict stroke risk from ECG micro-dynamics.")
 
 # =============================
 # تحميل ملفات الموديل
@@ -40,44 +36,28 @@ if st.button("Save uploaded files"):
     if up_scaler: open(SCALER_PATH, "wb").write(up_scaler.read())
     if up_imputer: open(IMPUTER_PATH, "wb").write(up_imputer.read())
     if up_feats: open(FEATURES_PATH, "wb").write(up_feats.read())
-    st.success("✅ Uploaded files saved. Click 'Rerun' to load them.")
+    st.success("✅ Uploaded files saved successfully. Click 'Rerun' to load them.")
 
 # =============================
-# تحميل الأدوات المحفوظة
+# تحميل الموديلات
 # =============================
 def load_artifacts():
-    try:
-        model = joblib.load(MODEL_PATH)
-        st.success("✅ Model loaded successfully.")
-    except:
-        model = None
-        st.warning("⚠️ Model not found, skipping.")
-
-    try:
-        scaler = joblib.load(SCALER_PATH)
-    except:
-        scaler = None
-        st.warning("⚠️ Scaler not found, skipping.")
-
-    try:
-        imputer = joblib.load(IMPUTER_PATH)
-    except:
-        imputer = None
-        st.warning("⚠️ Imputer not found, skipping.")
-
+    model = joblib.load(MODEL_PATH)
+    scaler = joblib.load(SCALER_PATH)
+    imputer = joblib.load(IMPUTER_PATH)
     selected_idx = None
     if os.path.exists(FEATURES_PATH):
         selected_idx = np.load(FEATURES_PATH)
-        st.info(f"✅ Loaded feature selection index ({len(selected_idx)} features).")
-    else:
-        st.warning("⚠️ features_selected.npy not found — using all features.")
-
     return model, scaler, imputer, selected_idx
 
-model, scaler, imputer, selected_idx = load_artifacts()
+try:
+    model, scaler, imputer, selected_idx = load_artifacts()
+except Exception as e:
+    st.stop()
+    st.error(f"❌ Failed to load model: {e}")
 
 # =============================
-# استخراج المميزات من الإشارة
+# استخراج المميزات
 # =============================
 def extract_micro_features(sig):
     sig = np.asarray(sig, dtype=float)
@@ -92,10 +72,9 @@ def extract_micro_features(sig):
     ])
 
 # =============================
-# دوال المساعدة لتصحيح mismatch
+# ضبط الأبعاد + تطبيق feature selection
 # =============================
-def align(X, expected, name):
-    """Ensure array X has expected number of columns."""
+def align(X, expected):
     if X.ndim == 1:
         X = X.reshape(1, -1)
     if expected is None:
@@ -103,34 +82,17 @@ def align(X, expected, name):
     if X.shape[1] < expected:
         add = expected - X.shape[1]
         X = np.hstack([X, np.zeros((X.shape[0], add))])
-        st.info(f"Added {add} placeholders for {name}.")
     elif X.shape[1] > expected:
-        cut = X.shape[1] - expected
         X = X[:, :expected]
-        st.info(f"Trimmed {cut} extra features for {name}.")
     return X
 
 def apply_feature_selection(X, selected_idx):
-    if selected_idx is not None:
-        if X.shape[1] >= len(selected_idx):
-            X = X[:, selected_idx]
-            st.success(f"✅ Applied feature selection ({len(selected_idx)} features).")
-        else:
-            st.warning("⚠️ Not enough features for selection, skipping.")
-    return X
-
-def safe_transform(imputer, scaler, X):
-    """Apply imputer & scaler if available, handling shape mismatches safely."""
-    if imputer is not None:
-        X = align(X, getattr(imputer, "n_features_in_", X.shape[1]), "Imputer")
-        X = imputer.transform(X)
-    if scaler is not None:
-        X = align(X, getattr(scaler, "n_features_in_", X.shape[1]), "Scaler")
-        X = scaler.transform(X)
+    if selected_idx is not None and X.shape[1] >= len(selected_idx):
+        X = X[:, selected_idx]
     return X
 
 # =============================
-# واجهة الإدخال
+# واجهة التطبيق
 # =============================
 st.markdown("---")
 mode = st.radio("Select input type:", ["Raw ECG (.hea + .dat)", "Feature file (CSV / NPY)"])
@@ -144,35 +106,37 @@ if mode == "Raw ECG (.hea + .dat)":
     dat_file = st.file_uploader("Upload .dat file", type=["dat"])
 
     if hea_file and dat_file:
-        tmp_name = hea_file.name.replace(".hea", "")
+        tmp = hea_file.name.replace(".hea", "")
         open(hea_file.name, "wb").write(hea_file.read())
         open(dat_file.name, "wb").write(dat_file.read())
 
         try:
-            rec = rdrecord(tmp_name)
+            rec = rdrecord(tmp)
             sig = rec.p_signal[:, 0]
             st.line_chart(sig[:2000], height=200)
             st.caption("Preview of first 2000 ECG samples")
 
             feats = extract_micro_features(sig).reshape(1, -1)
             feats = apply_feature_selection(feats, selected_idx)
-            feats = safe_transform(imputer, scaler, feats)
+            feats = align(feats, len(imputer.statistics_))
+            X_imp = imputer.transform(feats)
+            X_imp = align(X_imp, len(scaler.mean_))
+            X_scaled = scaler.transform(X_imp)
+            X_scaled = align(X_scaled, getattr(model, "n_features_in_", X_scaled.shape[1]))
 
-            # ✅ إصلاح mismatch للموديل
-            if model is not None:
-                expected = getattr(model, "n_features_in_", feats.shape[1])
-                feats = align(feats, expected, "Model")
-                prob = model.predict_proba(feats)[0, 1]
-                label = "⚠️ High Stroke Risk" if prob >= threshold else "✅ Normal ECG"
+            prob = model.predict_proba(X_scaled)[0, 1]
+            label = "⚠️ High Stroke Risk" if prob >= threshold else "✅ Normal ECG"
 
-                st.metric("Result", label, delta=f"{prob*100:.2f}%")
+            st.metric("Result", label, delta=f"{prob*100:.2f}%")
 
-                fig, ax = plt.subplots()
-                ax.bar(["Normal", "Stroke Risk"], [1-prob, prob], color=["#6cc070", "#ff6b6b"])
-                ax.set_ylabel("Probability")
-                st.pyplot(fig)
-            else:
-                st.warning("⚠️ No model loaded to predict.")
+            # ====== جراف احترافي ======
+            fig, ax = plt.subplots(figsize=(4, 1.5))
+            bar_color = "#ff6b6b" if prob >= threshold else "#6cc070"
+            ax.barh(["Stroke Risk"], [prob], color=bar_color)
+            ax.set_xlim(0, 1)
+            ax.set_xlabel("Probability")
+            ax.set_title("Risk Probability")
+            st.pyplot(fig)
 
         except Exception as e:
             st.error(f"❌ Error processing ECG: {e}")
@@ -186,29 +150,34 @@ else:
         try:
             X = pd.read_csv(uploaded).values if uploaded.name.endswith(".csv") else np.load(uploaded)
             X = apply_feature_selection(X, selected_idx)
-            X = safe_transform(imputer, scaler, X)
+            X = align(X, len(imputer.statistics_))
+            X_imp = imputer.transform(X)
+            X_imp = align(X_imp, len(scaler.mean_))
+            X_scaled = scaler.transform(X_imp)
+            X_scaled = align(X_scaled, getattr(model, "n_features_in_", X_scaled.shape[1]))
 
-            if model is not None:
-                expected = getattr(model, "n_features_in_", X.shape[1])
-                X = align(X, expected, "Model")
+            probs = model.predict_proba(X_scaled)[:, 1]
+            preds = np.where(probs >= threshold, "⚠️ High Risk", "✅ Normal")
 
-                probs = model.predict_proba(X)[:, 1]
-                preds = np.where(probs >= threshold, "⚠️ High Risk", "✅ Normal")
+            df_out = pd.DataFrame({
+                "Sample": np.arange(1, len(probs)+1),
+                "Probability": probs,
+                "Prediction": preds
+            })
+            st.dataframe(df_out.head(10))
+            st.line_chart(probs, height=150)
 
-                df_out = pd.DataFrame({
-                    "Sample": np.arange(1, len(probs)+1),
-                    "Probability": probs,
-                    "Prediction": preds
-                })
-                st.dataframe(df_out.head(10))
-                st.line_chart(probs, height=150)
+            buf = BytesIO()
+            df_out.to_csv(buf, index=False)
+            st.download_button("⬇️ Download Predictions CSV", buf.getvalue(),
+                               file_name="batch_predictions.csv", mime="text/csv")
 
-                buf = BytesIO()
-                df_out.to_csv(buf, index=False)
-                st.download_button("⬇️ Download Predictions CSV", buf.getvalue(),
-                                   file_name="batch_predictions.csv", mime="text/csv")
-            else:
-                st.warning("⚠️ No model loaded to predict.")
+            avg_prob = np.mean(probs)
+            fig, ax = plt.subplots(figsize=(4, 1.5))
+            ax.barh(["Average Risk"], [avg_prob], color="#ff6b6b" if avg_prob > threshold else "#6cc070")
+            ax.set_xlim(0, 1)
+            ax.set_xlabel("Average Probability")
+            st.pyplot(fig)
 
         except Exception as e:
             st.error(f"❌ Error processing file: {e}")
@@ -219,7 +188,8 @@ else:
 st.markdown("---")
 st.markdown("""
 ✅ **Final Notes**
-- Supports missing or mismatched feature counts safely.
-- Optional feature selection (`features_selected.npy`).
-- For research use only — not a clinical diagnosis tool.
+- Automatic feature alignment for Imputer, Scaler, and Model.  
+- Silent mode (no info messages).  
+- Visual bar chart for stroke risk probability.  
+- For research purposes only — not a medical diagnosis tool.
 """)
