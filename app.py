@@ -1,7 +1,7 @@
 import streamlit as st
 import numpy as np
 import pandas as pd
-import joblib, os, glob
+import joblib, os
 from scipy.stats import skew, kurtosis
 from wfdb import rdrecord
 import matplotlib.pyplot as plt
@@ -11,27 +11,8 @@ from io import BytesIO
 # إعداد الصفحة
 # =============================
 st.set_page_config(page_title="ECG Stroke Predictor", page_icon="💙", layout="centered")
-st.title("🫀 ECG Stroke Prediction (Final v4 — Auto Merge + Double Graphs)")
+st.title("🫀 ECG Stroke Prediction (Final v4 — Debug & Visualization)")
 st.caption("Uploads ECG or feature files, applies same feature selection as training, and predicts stroke risk.")
-
-# =============================
-# دمج ملفات npychunk تلقائياً
-# =============================
-chunk_files = sorted(glob.glob("part_*.npychunk"))
-if len(chunk_files) > 0:
-    st.info(f"🧩 Found {len(chunk_files)} chunk parts. Reconstructing full file...")
-    all_parts = []
-    for cf in chunk_files:
-        try:
-            arr = np.load(cf, allow_pickle=True)
-            all_parts.append(arr)
-        except Exception as e:
-            st.warning(f"⚠️ Skipped {cf}: {e}")
-    merged = np.concatenate(all_parts, axis=0)
-    np.save("merged_features.npy", merged)
-    st.success(f"✅ Merged chunks into merged_features.npy (shape={merged.shape})")
-else:
-    st.caption("No chunk parts detected (expected part_1.npychunk, part_2.npychunk, ...).")
 
 # =============================
 # تحميل ملفات الموديل
@@ -47,7 +28,7 @@ up_scaler = st.file_uploader("scaler.joblib", type=["joblib", "pkl"])
 up_imputer = st.file_uploader("imputer.joblib", type=["joblib", "pkl"])
 up_feats = st.file_uploader("features_selected.npy (optional)", type=["npy"])
 
-if st.button("Save uploaded files"):
+if st.button("💾 Save uploaded files"):
     if up_model: open(MODEL_PATH, "wb").write(up_model.read())
     if up_scaler: open(SCALER_PATH, "wb").write(up_scaler.read())
     if up_imputer: open(IMPUTER_PATH, "wb").write(up_imputer.read())
@@ -69,8 +50,8 @@ def load_artifacts():
 try:
     model, scaler, imputer, selected_idx = load_artifacts()
 except Exception as e:
-    st.error(f"❌ Failed to load model: {e}")
     st.stop()
+    st.error(f"❌ Failed to load model: {e}")
 
 # =============================
 # استخراج المميزات
@@ -88,7 +69,7 @@ def extract_micro_features(sig):
     ])
 
 # =============================
-# ضبط الأبعاد + Feature Selection
+# ضبط الأبعاد + feature selection
 # =============================
 def align(X, expected, name):
     if X.ndim == 1:
@@ -115,10 +96,10 @@ def apply_feature_selection(X, selected_idx):
     return X
 
 # =============================
-# واجهة التطبيق
+# الواجهة الرئيسية
 # =============================
 st.markdown("---")
-mode = st.radio("Select input type:", ["Raw ECG (.hea + .dat)", "Feature file (CSV / NPY / merged_features.npy)"])
+mode = st.radio("Select input type:", ["Raw ECG (.hea + .dat)", "Feature file (CSV / NPY)"])
 threshold = st.slider("Decision threshold", 0.1, 0.9, 0.5, 0.01)
 
 # =============================
@@ -147,27 +128,40 @@ if mode == "Raw ECG (.hea + .dat)":
             X_scaled = scaler.transform(X_imp)
             X_scaled = align(X_scaled, model.n_features_in_, "Model")
 
+            # Debug info
+            st.write("📊 Features before imputer:", feats.shape)
+            st.write("📊 After imputer:", X_imp.shape)
+            st.write("📊 After scaler:", X_scaled.shape)
+            st.write("🧠 Model expects:", model.n_features_in_)
+
             prob = model.predict_proba(X_scaled)[0, 1]
             label = "⚠️ High Stroke Risk" if prob >= threshold else "✅ Normal ECG"
 
             st.metric("Result", label, delta=f"{prob*100:.2f}%")
             st.write(f"🧩 Model raw probability: {prob:.4f}")
 
-            # ===== جرافين =====
-            fig, axes = plt.subplots(1, 2, figsize=(8, 3))
-            axes[0].plot(sig[:1500])
-            axes[0].set_title("ECG Segment")
-            axes[1].bar(["Normal", "Stroke Risk"], [1-prob, prob],
-                        color=["#6cc070", "#ff6b6b"])
-            axes[1].set_ylabel("Probability")
-            st.pyplot(fig)
+            # ===== Graph 1: Probability bar =====
+            fig1, ax1 = plt.subplots()
+            ax1.bar(["Normal", "Stroke Risk"], [1-prob, prob],
+                    color=["#6cc070", "#ff6b6b"])
+            ax1.set_ylabel("Probability")
+            ax1.set_title("Stroke Risk Probability")
+            st.pyplot(fig1)
 
-            # ===== الرسالة النهائية =====
+            # ===== Graph 2: Signal histogram =====
+            fig2, ax2 = plt.subplots()
+            ax2.hist(sig, bins=40, color="#4a90e2", alpha=0.8)
+            ax2.set_title("ECG Signal Distribution")
+            ax2.set_xlabel("Amplitude")
+            ax2.set_ylabel("Frequency")
+            st.pyplot(fig2)
+
+            # ===== Final Message =====
             st.markdown("---")
             if prob >= threshold:
-                st.error("🚨 The model predicts **High Stroke Risk**. Please seek medical evaluation.")
+                st.error("🚨 **The ECG indicates HIGH STROKE RISK! Please consult a specialist.**")
             else:
-                st.success("✅ The model predicts **Normal ECG**. No immediate stroke risk detected.")
+                st.success("💚 **This ECG appears NORMAL. No stroke risk detected.**")
 
         except Exception as e:
             st.error(f"❌ Error processing ECG: {e}")
@@ -176,7 +170,7 @@ if mode == "Raw ECG (.hea + .dat)":
 # FEATURE FILE MODE
 # =============================
 else:
-    uploaded = st.file_uploader("Upload feature file (CSV / NPY / merged_features.npy)", type=["csv", "npy"])
+    uploaded = st.file_uploader("Upload feature file (CSV/NPY)", type=["csv", "npy"])
     if uploaded:
         try:
             X = pd.read_csv(uploaded).values if uploaded.name.endswith(".csv") else np.load(uploaded)
@@ -203,19 +197,8 @@ else:
             st.download_button("⬇️ Download Predictions CSV", buf.getvalue(),
                                file_name="batch_predictions.csv", mime="text/csv")
 
-            # جراف إضافي
-            fig, ax = plt.subplots()
-            ax.hist(probs, bins=20, color="#4a90e2", alpha=0.7)
-            ax.set_title("Distribution of Stroke Risk Probabilities")
-            st.pyplot(fig)
-
-            # الرسالة النهائية
             st.markdown("---")
-            avg_prob = np.mean(probs)
-            if avg_prob >= threshold:
-                st.error(f"🚨 Average Risk Detected ({avg_prob:.2f}) — Possible Stroke Tendency.")
-            else:
-                st.success(f"✅ Average Risk Low ({avg_prob:.2f}) — Normal Overall Pattern.")
+            st.info("✅ Batch prediction completed successfully!")
 
         except Exception as e:
             st.error(f"❌ Error processing file: {e}")
@@ -226,9 +209,8 @@ else:
 st.markdown("---")
 st.markdown("""
 ✅ **Final Notes**
-- Auto-merges `.npychunk` parts into one dataset.
-- Applies same `features_selected.npy` as training (if exists).
-- Displays double graphs and clear result messages.
-- No more feature mismatch issues.
+- Debug info added for better transparency.
+- Two visual graphs: ECG Distribution & Risk Probability.
+- Feature alignment handled automatically.
 - For research use only — not a clinical diagnosis tool.
 """)
